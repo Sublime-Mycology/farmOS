@@ -1,0 +1,7 @@
+# Session transcripts are personal. Keep the folder, never commit its contents.
+sessions/*
+!sessions/.gitkeep
+
+# Uncomment once you've filled context.md with real numbers and real names,
+# if this fork is ever public or shared:
+# context.md
