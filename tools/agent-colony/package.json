@@ -1,0 +1,19 @@
+{
+  "name": "agent-colony",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Watch your Claude Code agents work as a little colony of bots on hex plots.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "demo": "node server.mjs --demo",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  }
+}
