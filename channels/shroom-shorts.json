@@ -1,0 +1,50 @@
+{
+  "title": "Shroom Shorts",
+  "about": "A sample channel for clips of your own mushroom-farm videos. Rename or delete it.",
+  "rights": "own",
+  "allowedCreators": [],
+  "niche": "Mushroom growing for curious beginners and small growers: grow rooms, substrate, harvests, mistakes and wins.",
+  "lookFor": [
+    "a visual moment: a flush, a pin set, a harvest",
+    "one practical growing tip with a clear takeaway",
+    "a mistake and what fixed it"
+  ],
+  "avoid": [
+    "long equipment walk-throughs without a payoff"
+  ],
+  "defaultFormat": "short",
+  "formats": {
+    "short": {
+      "perVideo": 3,
+      "layout": "fill",
+      "minSeconds": 15,
+      "maxSeconds": 59,
+      "captionMode": "words",
+      "hashtags": [
+        "#mushrooms",
+        "#shorts"
+      ]
+    },
+    "long": {
+      "perVideo": 1,
+      "layout": "wide",
+      "minSeconds": 300,
+      "maxSeconds": 1800,
+      "captionMode": "lines",
+      "uppercase": false
+    }
+  },
+  "style": {
+    "accent": "#8BE04E",
+    "font": "DejaVu Sans"
+  },
+  "credit": "Full video: {url}",
+  "hashtags": [
+    "#mushrooms",
+    "#growyourown"
+  ],
+  "tags": [
+    "mushrooms",
+    "mushroom growing"
+  ]
+}

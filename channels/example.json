@@ -1,0 +1,57 @@
+{
+  "title": "Example Clips",
+  "about": "Copy this file to channels/<your-channel>.json, one per YouTube channel you run.",
+  "rights": "permission",
+  "allowedCreators": [
+    {
+      "handle": "@SomeCreator",
+      "name": "Some Creator",
+      "permission": "Joined their clip program on 2026-09-01 (screenshot in /permissions/some-creator.png)",
+      "notes": "Wants the full-video link first in the description."
+    }
+  ],
+  "niche": "What this channel is about and who it's for. The agent reads this to pick moments.",
+  "lookFor": [
+    "a surprising fact or reveal",
+    "a strong opinion said in one breath",
+    "a funny exchange with a clear punchline",
+    "a story with a beginning, a turn and an ending"
+  ],
+  "avoid": [
+    "inside jokes that need context",
+    "moments that start mid-sentence",
+    "sponsor reads"
+  ],
+  "defaultFormat": "short",
+  "formats": {
+    "short": {
+      "perVideo": 4,
+      "layout": "fit",
+      "minSeconds": 15,
+      "maxSeconds": 59,
+      "captionMode": "words",
+      "wordsPerCaption": 3,
+      "uppercase": true,
+      "hashtags": [
+        "#shorts"
+      ]
+    },
+    "long": {
+      "perVideo": 1,
+      "layout": "wide",
+      "minSeconds": 480,
+      "maxSeconds": 1800,
+      "captionMode": "lines",
+      "uppercase": false,
+      "hookSeconds": 4,
+      "preset": "veryfast"
+    }
+  },
+  "style": {
+    "accent": "#FFD400",
+    "font": "DejaVu Sans"
+  },
+  "credit": "🎥 Full video: {title} by {uploader}\n{url}",
+  "hashtags": [],
+  "tags": []
+}
