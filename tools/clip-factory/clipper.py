@@ -1,0 +1,638 @@
+#!/usr/bin/env python3
+"""
+clipper: the mechanical half of Clip Factory. An agent (or you) decides *what* to clip;
+this does the downloading, cutting, reframing, captioning and bookkeeping.
+
+    clipper doctor                                   check ffmpeg / yt-dlp / folders
+    clipper channels                                 list channel configs
+    clipper fetch URL --channel NAME                 download a video + timed transcript
+    clipper import FILE --channel NAME [--subs F]    use a local video (your own footage)
+    clipper transcript VIDEO_ID [--from S] [--to S]  print the transcript with timestamps
+    clipper cut VIDEO_ID --channel NAME --start S --end S --title "..." [--hook "..."]
+    clipper queue [--channel NAME] [--status pending]
+    clipper approve CLIP_ID / clipper reject CLIP_ID [--reason "..."]
+
+Times accept seconds (83.5) or mm:ss / hh:mm:ss. Media lives under $CLIP_FACTORY_HOME
+(default ~/ClipFactory), outside git, so every agent's worktree shares it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import html
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+CHANNELS_DIR = ROOT / "channels"
+HOME = Path(os.environ.get("CLIP_FACTORY_HOME", Path.home() / "ClipFactory")).expanduser()
+VIDEOS = HOME / "videos"
+REVIEW = HOME / "review"
+
+RIGHTS = {
+    "own": "Your own footage",
+    "permission": "The creator allows clipping (clip program, written OK, or stated policy)",
+    "licensed": "Licensed for reuse (e.g. Creative Commons BY)",
+}
+
+
+# ---------------------------------------------------------------------------------------------
+# helpers
+
+def die(msg: str, code: int = 1):
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def ffmpeg_bin() -> str:
+    exe = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg  # pip install imageio-ffmpeg: a static ffmpeg with libass
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        die("ffmpeg not found. Install it (brew/apt/winget install ffmpeg) or `pip install imageio-ffmpeg`.")
+
+
+def parse_time(v) -> float:
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if re.fullmatch(r"\d+(\.\d+)?", s):
+        return float(s)
+    parts = s.split(":")
+    if not all(re.fullmatch(r"\d+(\.\d+)?", p) for p in parts) or len(parts) > 3:
+        die(f"bad time: {v!r}")
+    total = 0.0
+    for p in parts:
+        total = total * 60 + float(p)
+    return total
+
+
+def fmt_time(t: float) -> str:
+    t = max(0, t)
+    h, rem = divmod(int(t), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def slugify(text: str, n: int = 48) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return (s[:n].rstrip("-") or "clip")
+
+
+def load_channel(name: str) -> dict:
+    path = CHANNELS_DIR / f"{name}.json"
+    if not path.exists():
+        known = ", ".join(sorted(p.stem for p in CHANNELS_DIR.glob("*.json"))) or "none yet"
+        die(f"no channel '{name}' (channels/{name}.json). Known: {known}")
+    ch = json.loads(path.read_text())
+    ch.setdefault("name", name)
+    ch.setdefault("style", {})
+    return ch
+
+
+def video_dir(video_id: str) -> Path:
+    d = VIDEOS / video_id
+    if not (d / "info.json").exists():
+        die(f"unknown video '{video_id}'. Fetch or import it first.")
+    return d
+
+
+def read_json(p: Path):
+    return json.loads(p.read_text())
+
+
+def write_json(p: Path, data):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    tmp.replace(p)
+
+
+# ---------------------------------------------------------------------------------------------
+# transcripts: everything becomes a flat list of timed words [{"t": start, "e": end, "w": text}]
+
+def words_from_json3(data: dict) -> list[dict]:
+    """YouTube's json3 captions. Auto-captions carry per-word offsets; manual ones per line."""
+    words = []
+    for ev in data.get("events", []):
+        segs = ev.get("segs")
+        if not segs:
+            continue
+        t0 = ev.get("tStartMs", 0) / 1000
+        dur = ev.get("dDurationMs", 0) / 1000
+        pieces = [(t0 + s.get("tOffsetMs", 0) / 1000, s.get("utf8", "")) for s in segs]
+        pieces = [(t, txt) for t, txt in pieces if txt.strip() and txt != "\n"]
+        if len(pieces) == 1 and len(pieces[0][1].split()) > 1:
+            # A whole line with one timestamp: spread its words across the event.
+            toks = pieces[0][1].split()
+            step = (dur or len(toks) * 0.3) / len(toks)
+            pieces = [(t0 + i * step, w) for i, w in enumerate(toks)]
+        for t, txt in pieces:
+            for w in txt.split():
+                words.append({"t": round(t, 3), "w": w})
+    return finish_words(words)
+
+
+def words_from_cues(cues: list[tuple[float, float, str]]) -> list[dict]:
+    """Line cues (SRT/VTT) → words, spread evenly over each cue."""
+    words = []
+    for start, end, text in cues:
+        toks = text.split()
+        if not toks:
+            continue
+        step = max(0.05, (end - start) / len(toks))
+        for i, w in enumerate(toks):
+            words.append({"t": round(start + i * step, 3), "w": w})
+    return finish_words(words)
+
+
+def finish_words(words: list[dict]) -> list[dict]:
+    words.sort(key=lambda w: w["t"])
+    # Drop the rolling duplicates auto-captions produce, then give every word an end time.
+    out = []
+    for w in words:
+        if out and out[-1]["w"] == w["w"] and w["t"] - out[-1]["t"] < 0.05:
+            continue
+        out.append(w)
+    for i, w in enumerate(out):
+        nxt = out[i + 1]["t"] if i + 1 < len(out) else w["t"] + 0.6
+        w["e"] = round(min(nxt, w["t"] + 1.2), 3)
+    return out
+
+
+def parse_cue_file(path: Path) -> list[tuple[float, float, str]]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    cues = []
+    ts = r"(\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{1,3}"
+    for block in re.split(r"\n\s*\n", text.replace("\r", "")):
+        lines = [l for l in block.strip().split("\n") if l.strip()]
+        for i, line in enumerate(lines):
+            m = re.match(rf"\s*({ts})\s*-->\s*({ts})", line)
+            if m:
+                start = parse_time(m.group(1).replace(",", "."))
+                end = parse_time(m.group(3).replace(",", "."))
+                body = " ".join(lines[i + 1:])
+                body = re.sub(r"<[^>]+>", "", html.unescape(body)).strip()
+                if body:
+                    cues.append((start, end, body))
+                break
+    # VTT auto-captions repeat the previous line; keep only what is new in each cue.
+    dedup = []
+    for s, e, b in cues:
+        if dedup and b.startswith(dedup[-1][2]):
+            b = b[len(dedup[-1][2]):].strip()
+        if b:
+            dedup.append((s, e, b))
+    return dedup
+
+
+def transcript_lines(words: list[dict], max_gap: float = 1.2, max_len: int = 18) -> list[dict]:
+    """Group words into readable lines, breaking on pauses and sentence ends."""
+    lines, cur = [], []
+    for w in words:
+        if cur and (w["t"] - cur[-1]["e"] > max_gap or len(cur) >= max_len or re.search(r"[.?!]$", cur[-1]["w"])):
+            lines.append(cur)
+            cur = []
+        cur.append(w)
+    if cur:
+        lines.append(cur)
+    return [{"t": l[0]["t"], "e": l[-1]["e"], "text": " ".join(x["w"] for x in l)} for l in lines]
+
+
+# ---------------------------------------------------------------------------------------------
+# commands
+
+def cmd_doctor(_):
+    ok = True
+    try:
+        exe = ffmpeg_bin()
+        out = subprocess.run([exe, "-hide_banner", "-filters"], capture_output=True, text=True).stdout
+        has_ass = " ass " in out
+        print(f"ffmpeg      {exe}")
+        print(f"  captions  {'yes (libass)' if has_ass else 'NO — this ffmpeg lacks libass; captions will be skipped'}")
+    except SystemExit:
+        ok = False
+    try:
+        import yt_dlp  # noqa: F401
+        print(f"yt-dlp      {yt_dlp.version.__version__}")
+    except Exception:
+        print("yt-dlp      missing (needed for `fetch`; `import` works without it): pip install yt-dlp")
+    print(f"media home  {HOME}")
+    chans = sorted(p.stem for p in CHANNELS_DIR.glob("*.json"))
+    print(f"channels    {', '.join(chans) or 'none — copy channels/example.json'}")
+    sys.exit(0 if ok else 1)
+
+
+def cmd_channels(_):
+    for p in sorted(CHANNELS_DIR.glob("*.json")):
+        ch = read_json(p)
+        print(f"{p.stem:20} {ch.get('title', ''):30} rights={ch.get('rights', '?'):10} layout={ch.get('style', {}).get('layout', 'fit')}")
+
+
+def check_rights(ch: dict, uploader: str, uploader_id: str, override: bool):
+    rights = ch.get("rights")
+    if rights not in RIGHTS:
+        die(f"channel '{ch['name']}' must say what rights it has: \"rights\": one of {', '.join(RIGHTS)}")
+    allowed = [a.lower() for a in ch.get("allowedCreators", [])]
+    if rights in ("permission", "own") and allowed and not override:
+        if uploader.lower() not in allowed and uploader_id.lower() not in allowed:
+            die(f"'{uploader}' is not in channel '{ch['name']}' allowedCreators. Add them once you have their OK, "
+                f"or pass --i-have-rights for a one-off you are sure about.")
+
+
+def cmd_fetch(a):
+    ch = load_channel(a.channel)
+    try:
+        import yt_dlp
+    except ImportError:
+        die("yt-dlp is not installed: pip install yt-dlp")
+
+    # Look before downloading, so the rights check happens first.
+    with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as y:
+        info = y.extract_info(a.url, download=False)
+    vid = info["id"]
+    check_rights(ch, info.get("uploader") or "", info.get("uploader_id") or info.get("channel_id") or "", a.i_have_rights)
+
+    d = VIDEOS / vid
+    d.mkdir(parents=True, exist_ok=True)
+    opts = {
+        "outtmpl": str(d / "source.%(ext)s"),
+        "format": "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]/b",
+        "merge_output_format": "mp4",
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": [a.lang, f"{a.lang}.*"],
+        "subtitlesformat": "json3/vtt/best",
+        "quiet": not a.verbose,
+        "noprogress": not a.verbose,
+    }
+    ff = ffmpeg_bin()
+    opts["ffmpeg_location"] = ff
+    with yt_dlp.YoutubeDL(opts) as y:
+        info = y.extract_info(a.url, download=True)
+
+    words = []
+    for f in sorted(d.glob("source.*.json3")):
+        words = words_from_json3(read_json(f))
+        if words:
+            break
+    if not words:
+        for f in sorted(d.glob("source.*.vtt")) + sorted(d.glob("source.*.srt")):
+            words = words_from_cues(parse_cue_file(f))
+            if words:
+                break
+    if not words:
+        words = whisper_words(d / "source.mp4")
+
+    write_json(d / "words.json", words)
+    write_json(d / "info.json", {
+        "id": vid, "url": info.get("webpage_url", a.url), "title": info.get("title", ""),
+        "uploader": info.get("uploader", ""), "uploaderUrl": info.get("uploader_url", ""),
+        "duration": info.get("duration", 0), "license": info.get("license", ""),
+        "channel": ch["name"], "fetched": dt.datetime.now().isoformat(timespec="seconds"),
+    })
+    print(f"{vid}  {info.get('title', '')}  ({fmt_time(info.get('duration', 0))}, {len(words)} words of transcript)")
+    if not words:
+        print("warning: no transcript found; `pip install faster-whisper` to transcribe locally.", file=sys.stderr)
+
+
+def whisper_words(path: Path) -> list[dict]:
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return []
+    print("no captions; transcribing locally with faster-whisper…", file=sys.stderr)
+    model = WhisperModel(os.environ.get("WHISPER_MODEL", "small"), compute_type="int8")
+    segments, _ = model.transcribe(str(path), word_timestamps=True)
+    words = []
+    for seg in segments:
+        for w in seg.words or []:
+            words.append({"t": round(w.start, 3), "w": w.word.strip()})
+    return finish_words(words)
+
+
+def cmd_import(a):
+    ch = load_channel(a.channel)
+    src = Path(a.file).expanduser().resolve()
+    if not src.exists():
+        die(f"no such file: {src}")
+    vid = a.id or slugify(src.stem, 32)
+    d = VIDEOS / vid
+    d.mkdir(parents=True, exist_ok=True)
+    dest = d / f"source{src.suffix.lower()}"
+    if not dest.exists():
+        shutil.copy2(src, dest)
+    words = []
+    if a.subs:
+        words = words_from_cues(parse_cue_file(Path(a.subs).expanduser()))
+    else:
+        words = whisper_words(dest)
+    write_json(d / "words.json", words)
+    write_json(d / "info.json", {
+        "id": vid, "url": a.url or "", "title": a.title or src.stem, "uploader": a.uploader or ch.get("title", ""),
+        "uploaderUrl": "", "duration": probe_duration(dest), "license": "", "channel": ch["name"],
+        "fetched": dt.datetime.now().isoformat(timespec="seconds"), "local": True,
+    })
+    print(f"{vid}  {a.title or src.stem}  ({len(words)} words of transcript)")
+
+
+def probe_duration(path: Path) -> float:
+    r = subprocess.run([ffmpeg_bin(), "-hide_banner", "-i", str(path)], capture_output=True, text=True)
+    m = re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", r.stderr)
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else 0.0
+
+
+def cmd_transcript(a):
+    d = video_dir(a.video)
+    info = read_json(d / "info.json")
+    words = read_json(d / "words.json")
+    lo = parse_time(a.from_) if a.from_ else 0
+    hi = parse_time(a.to) if a.to else float("inf")
+    print(f"# {info['title']} — {info.get('uploader', '')} ({fmt_time(info.get('duration', 0))})")
+    for line in transcript_lines([w for w in words if lo <= w["t"] <= hi]):
+        print(f"[{fmt_time(line['t'])} {line['t']:.1f}s] {line['text']}")
+
+
+def source_file(d: Path) -> Path:
+    for p in sorted(d.glob("source.*")):
+        if p.suffix.lower() in (".mp4", ".mkv", ".webm", ".mov", ".m4v"):
+            return p
+    die(f"no video file in {d}")
+
+
+def ass_color(hex_color: str) -> str:
+    h = hex_color.lstrip("#")
+    r, g, b = h[0:2], h[2:4], h[4:6]
+    return f"&H00{b}{g}{r}".upper()
+
+
+def build_ass(words: list[dict], start: float, end: float, hook: str, style: dict, w: int, h: int) -> str:
+    font = style.get("font", "DejaVu Sans")
+    size = int(style.get("captionSize", 84 if h > w else 64))
+    accent = ass_color(style.get("accent", "#FFD400"))
+    per = int(style.get("wordsPerCaption", 3))
+    margin = int(style.get("captionMargin", 560 if h > w else 90))
+    head = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {w}
+PlayResY: {h}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Cap,{font},{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,7,2,2,60,60,{margin},1
+Style: Hook,{font},{int(size * 0.72)},&H00111111,&H00FFFFFF,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,18,0,8,80,80,{int(h * 0.12)},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+    def ts(t):
+        t = max(0.0, t)
+        return f"{int(t // 3600)}:{int(t % 3600 // 60):02d}:{t % 60:05.2f}"
+
+    def esc(s):
+        return s.replace("\\", "").replace("{", "(").replace("}", ")")
+
+    events = []
+    dur = end - start
+    if hook:
+        hook_secs = float(style.get("hookSeconds", dur))
+        events.append(f"Dialogue: 1,{ts(0)},{ts(min(dur, hook_secs))},Hook,,0,0,0,,{esc(hook)}")
+    if style.get("captions", True):
+        clip_words = [x for x in words if start <= x["t"] < end]
+        upper = style.get("uppercase", True)
+        for i in range(0, len(clip_words), per):
+            chunk = clip_words[i:i + per]
+            for j, cw in enumerate(chunk):
+                t0 = cw["t"] - start
+                # A word stays lit until the next one starts; the last of a chunk until it ends.
+                t1 = (chunk[j + 1]["t"] if j + 1 < len(chunk) else cw["e"]) - start
+                if t1 <= t0:
+                    t1 = t0 + 0.2
+                parts = []
+                for k, x in enumerate(chunk):
+                    word = esc(x["w"].upper() if upper else x["w"])
+                    parts.append(f"{{\\c{accent}&}}{word}{{\\c&H00FFFFFF&}}" if k == j else word)
+                events.append(f"Dialogue: 0,{ts(t0)},{ts(min(t1, dur))},Cap,,0,0,0,,{' '.join(parts)}")
+    return head + "\n".join(events) + "\n"
+
+
+def video_filter(layout: str, w: int, h: int) -> str:
+    if layout == "fill":  # crop the middle of the frame to fill the screen
+        return f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1[v0]"
+    if layout == "wide":  # plain landscape clip
+        return f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1[v0]"
+    # fit: whole frame in the middle, blurred copy of itself behind
+    return (f"[0:v]split[a][b];[a]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
+            f"boxblur=24:2,eq=brightness=-0.12[bg];[b]scale={w}:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v0]")
+
+
+def cmd_cut(a):
+    ch = load_channel(a.channel)
+    style = {**ch.get("style", {})}
+    d = video_dir(a.video)
+    info = read_json(d / "info.json")
+    words = read_json(d / "words.json") if (d / "words.json").exists() else []
+    start, end = parse_time(a.start), parse_time(a.end)
+    if end <= start:
+        die("--end must be after --start")
+    lo, hi = float(style.get("minSeconds", 5)), float(style.get("maxSeconds", 180))
+    if not lo <= end - start <= hi:
+        die(f"clip is {end - start:.1f}s; channel '{ch['name']}' allows {lo:.0f}–{hi:.0f}s (style.minSeconds/maxSeconds)")
+    if info.get("duration") and end > info["duration"] + 0.5:
+        die(f"--end is past the end of the video ({fmt_time(info['duration'])})")
+
+    layout = a.layout or style.get("layout", "fit")
+    w, h = (1920, 1080) if layout == "wide" else (1080, 1920)
+    clip_id = f"{dt.datetime.now():%Y%m%d-%H%M%S}-{slugify(a.title, 40)}"
+    out_dir = REVIEW / ch["name"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{clip_id}.mp4"
+
+    ff = ffmpeg_bin()
+    has_ass = " ass " in subprocess.run([ff, "-hide_banner", "-filters"], capture_output=True, text=True).stdout
+    with tempfile.TemporaryDirectory() as tmp:
+        vf = video_filter(layout, w, h)
+        if has_ass and (a.hook or style.get("captions", True)):
+            Path(tmp, "subs.ass").write_text(build_ass(words, start, end, a.hook or "", style, w, h), encoding="utf-8")
+            vf += ";[v0]ass=subs.ass[v]"
+        else:
+            vf += ";[v0]null[v]"
+        cmd = [
+            ff, "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", f"{start:.3f}", "-i", str(source_file(d)), "-t", f"{end - start:.3f}",
+            "-filter_complex", vf, "-map", "[v]", "-map", "0:a?",
+            "-c:v", "libx264", "-preset", style.get("preset", "medium"), "-crf", str(style.get("crf", 20)),
+            "-pix_fmt", "yuv420p", "-r", "30",
+            "-af", "loudnorm=I=-14:TP=-1.5:LRA=11", "-c:a", "aac", "-b:a", "160k",
+            "-movflags", "+faststart", str(out),
+        ]
+        r = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True)
+        if r.returncode != 0:
+            die(f"ffmpeg failed:\n{r.stderr.strip()[-2000:]}")
+
+    credit_tpl = ch.get("credit", "Original: {title} by {uploader} — {url}")
+    credit = credit_tpl.format(title=info.get("title", ""), uploader=info.get("uploader", ""), url=info.get("url", ""),
+                               start=fmt_time(start), end=fmt_time(end))
+    tags = list(dict.fromkeys((a.tags.split(",") if a.tags else []) + ch.get("tags", [])))
+    hashtags = " ".join(ch.get("hashtags", []))
+    desc = "\n\n".join(x for x in [a.description or "", credit, hashtags] if x)
+    meta = {
+        "id": clip_id, "channel": ch["name"], "status": "pending", "file": out.name,
+        "title": a.title[:100], "description": desc, "tags": [t.strip() for t in tags if t.strip()],
+        "hook": a.hook or "", "layout": layout, "duration": round(end - start, 2),
+        "source": {"video": info["id"], "url": info.get("url", ""), "title": info.get("title", ""),
+                   "uploader": info.get("uploader", ""), "start": start, "end": end},
+        "rights": ch.get("rights"), "why": a.why or "",
+        "created": dt.datetime.now().isoformat(timespec="seconds"),
+    }
+    write_json(out_dir / f"{clip_id}.json", meta)
+    write_review_page(ch["name"])
+    print(f"{clip_id}  {out}")
+
+
+def all_clips(channel: str | None = None) -> list[tuple[Path, dict]]:
+    dirs = [REVIEW / channel] if channel else sorted(p for p in REVIEW.glob("*") if p.is_dir())
+    out = []
+    for d in dirs:
+        for p in sorted(d.glob("*.json")):
+            out.append((p, read_json(p)))
+    return out
+
+
+def cmd_queue(a):
+    clips = [(p, m) for p, m in all_clips(a.channel) if not a.status or m.get("status") == a.status]
+    for _, m in clips:
+        print(f"{m['status']:8} {m['channel']:14} {m['duration']:5.1f}s  {m['id']}  {m['title']}")
+    if not clips:
+        print("nothing here")
+    else:
+        for ch in sorted({m["channel"] for _, m in clips}):
+            print(f"review page: {REVIEW / ch / 'index.html'}")
+
+
+def find_clip(clip_id: str) -> tuple[Path, dict]:
+    for p, m in all_clips():
+        if m["id"] == clip_id or m["id"].startswith(clip_id):
+            return p, m
+    die(f"no clip '{clip_id}'")
+
+
+def set_status(clip_id: str, status: str, reason: str = ""):
+    p, m = find_clip(clip_id)
+    m["status"] = status
+    if reason:
+        m["reason"] = reason
+    m["reviewed"] = dt.datetime.now().isoformat(timespec="seconds")
+    write_json(p, m)
+    write_review_page(m["channel"])
+    print(f"{status}: {m['id']}")
+
+
+def write_review_page(channel: str):
+    """A plain page per channel to watch the clips before anything is posted."""
+    clips = [m for _, m in all_clips(channel)]
+    clips.sort(key=lambda m: m["created"], reverse=True)
+    cards = []
+    for m in clips:
+        e = html.escape
+        cards.append(f"""<article class="{e(m['status'])}">
+  <video src="{e(m['file'])}" controls preload="metadata"></video>
+  <div><span class="st">{e(m['status'])}</span> <b>{e(m['title'])}</b> <small>{m['duration']}s · {e(m['layout'])}</small>
+  <p>{e(m.get('why', ''))}</p>
+  <details><summary>Description &amp; source</summary><pre>{e(m['description'])}</pre>
+  <p>Tags: {e(', '.join(m.get('tags', [])))}</p>
+  <p>From <a href="{e(m['source']['url'])}">{e(m['source']['title'])}</a> {fmt_time(m['source']['start'])}–{fmt_time(m['source']['end'])}</p></details>
+  <code>python3 clipper.py approve {e(m['id'])}</code></div>
+</article>""")
+    page = f"""<!doctype html><meta charset="utf-8"><title>{html.escape(channel)} — clips to review</title>
+<style>
+body{{font:14px system-ui,sans-serif;background:#1d2419;color:#e8eee2;margin:0;padding:24px}}
+h1{{margin:0 0 16px}} main{{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:18px}}
+article{{background:#2a3325;border-radius:14px;padding:10px;display:flex;flex-direction:column;gap:8px}}
+video{{width:100%;border-radius:10px;background:#000;max-height:460px}}
+.st{{font-size:11px;padding:2px 7px;border-radius:99px;background:#555}} .pending .st{{background:#b98a1b}}
+.approved .st{{background:#3f8a4a}} .rejected{{opacity:.55}} .rejected .st{{background:#8a3f3f}}
+pre{{white-space:pre-wrap;font-size:12px}} code{{font-size:11px;color:#b7c4ad}} a{{color:#9fd18b}}
+</style><h1>{html.escape(channel)} <small>({sum(m['status'] == 'pending' for m in clips)} to review)</small></h1>
+<main>{''.join(cards) or '<p>No clips yet.</p>'}</main>"""
+    (REVIEW / channel / "index.html").write_text(page, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------------------------
+
+def main():
+    p = argparse.ArgumentParser(prog="clipper", description=__doc__.split("\n\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+    sub.add_parser("channels").set_defaults(fn=cmd_channels)
+
+    f = sub.add_parser("fetch")
+    f.add_argument("url")
+    f.add_argument("--channel", required=True)
+    f.add_argument("--lang", default="en")
+    f.add_argument("--i-have-rights", action="store_true", help="skip the allowedCreators check for this one video")
+    f.add_argument("--verbose", action="store_true")
+    f.set_defaults(fn=cmd_fetch)
+
+    i = sub.add_parser("import")
+    i.add_argument("file")
+    i.add_argument("--channel", required=True)
+    i.add_argument("--subs", help=".srt or .vtt transcript")
+    i.add_argument("--id")
+    i.add_argument("--title")
+    i.add_argument("--uploader")
+    i.add_argument("--url")
+    i.set_defaults(fn=cmd_import)
+
+    t = sub.add_parser("transcript")
+    t.add_argument("video")
+    t.add_argument("--from", dest="from_")
+    t.add_argument("--to")
+    t.set_defaults(fn=cmd_transcript)
+
+    c = sub.add_parser("cut")
+    c.add_argument("video")
+    c.add_argument("--channel", required=True)
+    c.add_argument("--start", required=True)
+    c.add_argument("--end", required=True)
+    c.add_argument("--title", required=True)
+    c.add_argument("--hook", help="short text shown at the top of the clip")
+    c.add_argument("--description")
+    c.add_argument("--tags", help="comma-separated")
+    c.add_argument("--layout", choices=["fit", "fill", "wide"])
+    c.add_argument("--why", help="one line on why this moment works (shown on the review page)")
+    c.set_defaults(fn=cmd_cut)
+
+    q = sub.add_parser("queue")
+    q.add_argument("--channel")
+    q.add_argument("--status", choices=["pending", "approved", "rejected"])
+    q.set_defaults(fn=cmd_queue)
+
+    ap = sub.add_parser("approve")
+    ap.add_argument("clip")
+    ap.set_defaults(fn=lambda a: set_status(a.clip, "approved"))
+    rj = sub.add_parser("reject")
+    rj.add_argument("clip")
+    rj.add_argument("--reason", default="")
+    rj.set_defaults(fn=lambda a: set_status(a.clip, "rejected", a.reason))
+
+    a = p.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()
