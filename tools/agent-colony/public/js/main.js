@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { createGround, createShip, Rocks, SAND } from './world.js'
+import { createGround, createCabin, Woods, FOG } from './world.js'
 import { Zone } from './zones.js'
 import { Building } from './buildings.js'
 import { Bot, Sparks } from './bots.js'
@@ -23,7 +23,7 @@ renderer.outputColorSpace = THREE.SRGBColorSpace
 stage.appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
-scene.fog = new THREE.Fog(SAND.clone().lerp(new THREE.Color('#f6e2cb'), 0.4), 140, 380)
+scene.fog = new THREE.Fog(FOG, 90, 300)
 
 const camera = new THREE.PerspectiveCamera(34, window.innerWidth / window.innerHeight, 0.5, 1200)
 camera.position.set(38, 62, 78)
@@ -36,21 +36,21 @@ controls.maxDistance = 320
 controls.screenSpacePanning = false
 controls.target.set(0, 0, 0)
 
-scene.add(new THREE.HemisphereLight('#fff3e2', '#c99a74', 1.1))
-const sun = new THREE.DirectionalLight('#fff0dc', 2.3)
+scene.add(new THREE.HemisphereLight('#f4f8e8', '#4d5e3a', 1.15))
+const sun = new THREE.DirectionalLight('#fff1d6', 2.4)
 sun.position.set(-40, 70, 30)
 sun.castShadow = true
 sun.shadow.mapSize.set(4096, 4096)
 sun.shadow.bias = -0.0004
 sun.shadow.normalBias = 0.04
 scene.add(sun, sun.target)
-const fill = new THREE.DirectionalLight('#9fb8ff', 0.9)
+const fill = new THREE.DirectionalLight('#a9c4ff', 0.7)
 fill.position.set(50, 30, -40)
 scene.add(fill)
 
 createGround(scene)
-const rocks = new Rocks(scene)
-const ship = createShip(scene)
+const woods = new Woods(scene)
+const cabin = createCabin(scene)
 const sparks = new Sparks(scene)
 
 const selRing = new THREE.Mesh(
@@ -112,7 +112,7 @@ function sync(state) {
     }
   }
   world.allTiles = [...world.zones.values()].flatMap((z) => z.tiles)
-  rocks.update(state.repos.flatMap((r) => r.tiles))
+  woods.update(state.repos.flatMap((r) => r.tiles))
   fitShadows()
 
   for (const repo of state.repos) {
@@ -209,7 +209,7 @@ function flyTo(target, distance, instant = false, direction = null) {
 }
 
 function home(instant = false) {
-  // Frame every tile plus the ship, and shift right so the side panel does not cover the colony.
+  // Frame every tile plus the cabin, and shift right so the side panel does not cover the colony.
   const box = new THREE.Box3().expandByPoint(new THREE.Vector3(-HEX_R, 0, -HEX_R)).expandByPoint(new THREE.Vector3(HEX_R, 0, HEX_R))
   for (const t of world.allTiles) {
     box.expandByPoint(t.pos.clone().addScalar(HEX_R))
@@ -353,7 +353,7 @@ function frame() {
   }
   for (const b of world.buildings.values()) b.tick(dt)
   sparks.tick(dt)
-  ship.userData.beacon.material.emissiveIntensity = 1 + Math.sin(t * 4) * 1
+  cabin.userData.beacon.material.emissiveIntensity = 1.3 + Math.sin(t * 2.3) * 0.25 + Math.sin(t * 11) * 0.1
 
   if (fly.active) {
     fly.t = Math.min(1, fly.t + dt / 0.9)

@@ -27,8 +27,15 @@ const ICON = {
   stop: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
 }
 
+const PERM_NAMES = {
+  acceptEdits: 'May edit files',
+  plan: 'Plan only, no changes',
+  default: 'Only tools needing no approval',
+  bypassPermissions: 'Anything (no sandbox!)',
+}
+
 const settings = (() => {
-  const defaults = { open: 'terminal', perm: 'acceptEdits', shadows: true }
+  const defaults = { open: 'terminal', perm: 'acceptEdits', tool: 'claude-code', worktree: true, shadows: true }
   try { return { ...defaults, ...JSON.parse(localStorage.getItem('colony.settings') || '{}') } } catch { return defaults }
 })()
 const saveSettings = () => { try { localStorage.setItem('colony.settings', JSON.stringify(settings)) } catch { /* private window */ } }
@@ -51,7 +58,6 @@ export class Hud {
     }
     $('#set-open').value = settings.open
     $('#set-open').addEventListener('change', (e) => { settings.open = e.target.value; saveSettings() })
-    $('#set-perm').addEventListener('change', (e) => { settings.perm = e.target.value; saveSettings() })
     $('#set-shadows').checked = settings.shadows
     $('#set-shadows').addEventListener('change', (e) => { settings.shadows = e.target.checked; saveSettings(); app.setShadows?.(settings.shadows) })
     $('#set-unarchive').addEventListener('click', async () => {
@@ -95,15 +101,10 @@ export class Hud {
       <span><i class="dot running"></i> <b>${n('running')}</b> working</span>
       <span><i class="dot waiting"></i> <b>${n('waiting')}</b> waiting</span>
       ${n('error') ? `<span><i class="dot error"></i> <b>${n('error')}</b> stuck</span>` : ''}`
-    const perm = $('#set-perm')
-    if (perm.options.length !== state.permissionModes.length) {
-      const names = { acceptEdits: 'Edit files (acceptEdits)', plan: 'Plan only, no changes', default: 'Ask (tools needing approval are refused)', bypassPermissions: 'Anything (bypassPermissions)' }
-      perm.innerHTML = state.permissionModes.map((m) => `<option value="${m}">${names[m] || m}</option>`).join('')
-      perm.value = state.permissionModes.includes(settings.perm) ? settings.perm : state.permissionModes[0]
-    }
+    const found = state.tools.filter((t) => t.available).map((t) => t.name)
     $('#set-info').textContent = state.demo
       ? 'Demo mode — a made-up colony. Run without --demo to see your real Claude Code threads.'
-      : state.claude ? `Using ${state.claude}.` : 'claude CLI not found: watching only.'
+      : found.length ? `Can launch: ${found.join(', ')}.` : 'No agent CLIs found on PATH: watching only.'
     this.refresh()
   }
 
@@ -133,8 +134,12 @@ export class Hud {
       <button class="btn primary" data-act="new" style="width:100%">${ICON.chat} New conversation</button>
       <div class="composer hidden" data-part="composer">
         <textarea placeholder="What should this agent work on? (Ctrl+Enter to launch)"></textarea>
+        <div class="opts">
+          <select data-part="tool" title="Which agent"></select>
+          <select data-part="perm" title="What it may do"></select>
+        </div>
         <div class="foot">
-          <span class="muted" data-part="perm"></span>
+          <label class="check" title="A fresh git worktree and branch, so agents never share files"><input type="checkbox" data-part="worktree"> Own worktree</label>
           <button class="btn small primary" data-act="launch">${ICON.send} Launch agent</button>
         </div>
       </div>
@@ -168,10 +173,28 @@ export class Hud {
     if (!c) return
     this.composerOpen = open
     c.classList.toggle('hidden', !open)
-    const perm = this.body.querySelector('[data-part="perm"]')
-    const names = { acceptEdits: 'Can edit files', plan: 'Plan only', default: 'Read-only tools', bypassPermissions: 'Unrestricted' }
-    perm.textContent = this.state.demo ? 'Demo agent' : this.state.claude ? names[settings.perm] || settings.perm : 'claude CLI not found'
+    const toolSel = c.querySelector('[data-part="tool"]')
+    const usable = this.state.tools.filter((t) => t.available || this.state.demo)
+    toolSel.innerHTML = usable.length
+      ? usable.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')
+      : '<option value="">No agent CLI found on PATH</option>'
+    toolSel.value = usable.some((t) => t.id === settings.tool) ? settings.tool : usable[0]?.id || ''
+    toolSel.onchange = () => { settings.tool = toolSel.value; saveSettings(); this.fillPerms() }
+    const wt = c.querySelector('[data-part="worktree"]')
+    wt.checked = settings.worktree !== false
+    wt.onchange = () => { settings.worktree = wt.checked; saveSettings() }
+    this.fillPerms()
     if (open) c.querySelector('textarea').focus()
+  }
+
+  fillPerms() {
+    const c = this.body.querySelector('[data-part="composer"]')
+    const t = this.state.tools.find((x) => x.id === c.querySelector('[data-part="tool"]').value)
+    const sel = c.querySelector('[data-part="perm"]')
+    const modes = t ? t.permissionModes : []
+    sel.innerHTML = modes.map((m) => `<option value="${m}">${PERM_NAMES[m] || m}</option>`).join('')
+    sel.value = modes.includes(settings.perm) ? settings.perm : modes[0] || ''
+    sel.onchange = () => { settings.perm = sel.value; saveSettings() }
   }
 
   async launch() {
@@ -181,10 +204,17 @@ export class Hud {
     const btn = this.body.querySelector('[data-act="launch"]')
     btn.disabled = true
     try {
-      await api.startTask(this.app.selection.repo, prompt, settings.perm)
+      const c = this.body.querySelector('[data-part="composer"]')
+      const r = await api.startTask(this.app.selection.repo, prompt, {
+        tool: c.querySelector('[data-part="tool"]').value,
+        permissionMode: c.querySelector('[data-part="perm"]').value,
+        worktree: c.querySelector('[data-part="worktree"]').checked,
+      })
       ta.value = ''
       this.openComposer(false)
-      this.toast('Agent launched — watch for it walking out of the ship.')
+      this.toast(r.worktree
+        ? `Agent launched on its own branch <code>${esc(r.worktree.branch)}</code> — watch for it leaving the cabin.`
+        : esc(r.note || 'Agent launched — watch for it leaving the cabin.'), 6000)
       this.app.refreshSoon()
     } catch (e) {
       this.toast(esc(e.message))
@@ -236,7 +266,8 @@ export class Hud {
     this.cardSig = sig
     this.cardFor = id
     const pctColor = t.status === 'error' ? 'var(--error)' : t.status === 'waiting' ? 'var(--waiting)' : 'var(--running)'
-    const canTalk = t.id && !t.id.startsWith('task-') && (this.state.claude || this.state.demo)
+    const toolInfo = this.state.tools.find((x) => x.id === t.tool)
+    const canTalk = t.id && !t.id.startsWith('task-') && toolInfo?.canResume && (toolInfo.available || this.state.demo)
     this.card.innerHTML = `
       <div class="top">
         <div class="face ${t.status}" style="--eye:${EYES[t.status]}"></div>
@@ -248,7 +279,8 @@ export class Hud {
       </div>
       <div class="bar" title="Building progress (transcript size)"><i style="width:${Math.round(t.pct * 100)}%;background:${pctColor}"></i></div>
       <div class="meta">
-        <b>${esc(t.repoName)}</b>${t.worktree ? ` · worktree <b>${esc(t.worktree)}</b>` : ''}${t.branch ? ` · ${esc(t.branch)}` : ''}${t.model ? `<br>${esc(t.model)}` : ''}
+        <span class="tool-tag">${esc(t.toolName || 'Claude Code')}</span> <b>${esc(t.repoName)}</b>${t.branch ? ` · ${esc(t.branch)}` : ''}${t.model ? ` · ${esc(t.model)}` : ''}
+        ${t.worktree ? `<div class="wt" data-part="wt">Own worktree <b>${esc(t.worktree)}</b></div>` : ''}
       </div>
       ${t.activity ? `<div class="activity">${esc(t.activity)}</div>` : ''}
       ${t.errands.length ? `<div class="errands">${t.errands.length} subagent${t.errands.length > 1 ? 's' : ''} out on errands</div>` : ''}
@@ -257,6 +289,7 @@ export class Hud {
         <button class="btn small" data-act="archive">${ICON.archive} Archive</button>
       </div>
       ${t.status === 'waiting' ? `<div class="btn-row" style="grid-template-columns:1fr"><button class="btn small" data-act="viewed">${ICON.eye} Mark viewed (V)</button></div>` : ''}
+      ${t.worktree && t.status !== 'running' ? `<div class="btn-row" style="grid-template-columns:1fr"><button class="btn small" data-act="rmwt" title="Deletes the folder; the branch and its commits are kept">${ICON.archive} Remove worktree (keeps branch)</button></div>` : ''}
       ${t.taskId && t.status === 'running' ? `<div class="btn-row" style="grid-template-columns:1fr"><button class="btn small" data-act="stop">${ICON.stop} Stop this agent</button></div>` : ''}
       ${canTalk && t.status !== 'running' ? `<div class="reply"><input placeholder="Give it a follow-up task…" value="${esc(keepReply)}"><button class="btn small" data-act="reply">${ICON.send}</button></div>` : ''}`
 
@@ -265,18 +298,20 @@ export class Hud {
     on('open', () => this.openThread(t))
     on('archive', async () => {
       await api.archive(t.id).catch((e) => this.toast(esc(e.message)))
-      this.toast('Archived — it is heading back to the ship.')
+      this.toast('Archived — it is heading back to the cabin.')
       this.app.clear()
       this.app.refreshSoon()
     })
     on('viewed', () => this.markViewed(t.id))
+    on('rmwt', () => this.removeWorktree(t))
+    if (t.worktree) this.loadWorktree(t)
     on('stop', async () => { await api.stopTask(t.taskId); this.app.refreshSoon() })
     const input = this.card.querySelector('.reply input')
     const send = async () => {
       const prompt = input.value.trim()
       if (!prompt) return
       try {
-        await api.reply(t.id, prompt, settings.perm)
+        await api.reply(t.id, prompt, toolInfo.permissionModes.includes(settings.perm) ? settings.perm : toolInfo.permissionModes[0])
         input.value = ''
         this.toast('Sent — back to work it goes.')
         this.app.refreshSoon()
@@ -300,6 +335,35 @@ export class Hud {
         this.toast('Opening…')
       }
       this.app.refreshSoon()
+    } catch (e) { this.toast(esc(e.message)) }
+  }
+
+  async loadWorktree(t) {
+    const w = await api.worktree(t.id).catch(() => null)
+    const el = this.card.querySelector('[data-part="wt"]')
+    if (!w || !el || this.cardFor !== t.id) return
+    if (w.missing) { el.innerHTML = `Worktree <b>${esc(t.worktree)}</b> has been removed`; return }
+    const bits = [
+      w.changed ? `${w.changed} uncommitted file${w.changed > 1 ? 's' : ''}` : 'no uncommitted changes',
+      `${w.commits} commit${w.commits === 1 ? '' : 's'} on its branch`,
+    ]
+    el.innerHTML = `Own worktree <b>${esc(t.worktree)}</b><br>${bits.join(' · ')}`
+  }
+
+  async removeWorktree(t, force = false) {
+    try {
+      const r = await fetch(`/api/threads/${t.id}/remove-worktree`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-colony': '1' }, body: JSON.stringify({ force }),
+      }).then((x) => x.json())
+      if (r.ok) {
+        this.toast(`Worktree removed. Branch <code>${esc(t.branch)}</code> is still there to merge or delete.`, 6000)
+        this.app.clear()
+        this.app.refreshSoon()
+      } else if (r.dirty && !force) {
+        if (confirm('This worktree has uncommitted changes. Remove it anyway and lose them?')) this.removeWorktree(t, true)
+      } else {
+        this.toast(esc(r.error || 'Could not remove the worktree'))
+      }
     } catch (e) { this.toast(esc(e.message)) }
   }
 

@@ -147,7 +147,7 @@ export class Bot {
    * @param opts.id        thread id (or errand id)
    * @param opts.accent    zone colour, used on the backpack
    * @param opts.errand    true for a subagent
-   * @param opts.fromShip  walk out of the ship rather than appearing in place
+   * @param opts.fromShip  walk out of the cabin rather than appearing in place
    */
   constructor({ id, accent, errand = false, fromShip = true, at = null }) {
     this.id = id
@@ -237,7 +237,7 @@ export class Bot {
     for (const t of this.world.allTiles) {
       if (inHex(x - t.pos.x, z - t.pos.z, HEX_R)) return DECK_TOP
     }
-    if (Math.hypot(x, z) < 6.1) return 0.18
+    if (Math.hypot(x, z) < 6.1) return 0.02
     return 0
   }
 
@@ -246,15 +246,15 @@ export class Bot {
     let moving = false
 
     if (this.leaving) {
-      // Walk to the ramp, then up it into the ship
+      // Walk to the porch, then in through the door
       const target = SHIP_DOOR
       if (this.boarding === 0 && this.moveTowards(target, dt, obstacles, bots, 0.6)) this.boarding = 0.001
       else moving = this.boarding === 0
       if (this.boarding > 0) {
         this.boarding += dt * 0.6
-        this.pos.z = SHIP_DOOR.z - this.boarding * 3.6
+        this.pos.z = SHIP_DOOR.z - this.boarding * 2.2 // in through the cabin door
         this.pos.x *= 0.9
-        this.pos.y = this.boarding * 2
+        this.pos.y = 0
         this.heading = Math.PI
         moving = true
         if (this.boarding >= 1) this.gone = true
@@ -287,7 +287,7 @@ export class Bot {
       this.heading = lerpAngle(this.heading, want, Math.min(1, dt * 5))
     }
 
-    const groundY = this.boarding > 0 ? SHIP_DOOR.y + this.pos.y + 0.18 : this.groundAt(this.pos.x, this.pos.z)
+    const groundY = this.boarding > 0 ? 0.2 : this.groundAt(this.pos.x, this.pos.z)
     if (this.boarding === 0) this.pos.y += (groundY - this.pos.y) * Math.min(1, dt * 12)
     this.group.position.set(this.pos.x, this.boarding > 0 ? groundY : this.pos.y, this.pos.z)
     this.group.rotation.y = this.heading

@@ -28,7 +28,7 @@ export const M = {
   sandDark: mat('#b98a66'),
   rock: mat('#6b4a3a'),
   rockDark: mat('#4a3228'),
-  deckSide: mat('#b98b78'),
+  deckSide: mat('#6e4a2c'),
   visor: mat('#141722', { roughness: 0.15, metalness: 0.6 }),
 }
 

@@ -1,16 +1,15 @@
 // Launching agents and handing threads back to the user.
 //
-// A task is a headless `claude -p` process. It writes its own transcript under ~/.claude like any
-// other session, so once it has a session id the scanner picks it up as an ordinary thread; until
-// then it is shown from here so its bot can walk out of the ship straight away.
+// A task is one headless run of a tool (see tools.mjs) in its own git worktree. Claude Code runs
+// write a transcript under ~/.claude like any other session, so once one has a session id the
+// scanner picks it up as an ordinary thread. Runs of other tools are shown from the process itself.
 
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import path from 'node:path'
+import { tool as findTool } from './tools.mjs'
 
-const CLAUDE_BIN = process.env.COLONY_CLAUDE_BIN || 'claude'
-const PERMISSION_MODES = new Set(['default', 'acceptEdits', 'plan', 'bypassPermissions'])
-const ALLOW_BYPASS = process.env.COLONY_ALLOW_BYPASS === '1'
+export const ALLOW_BYPASS = process.env.COLONY_ALLOW_BYPASS === '1'
 const LOG_LIMIT = 200
 
 const tasks = new Map()
@@ -26,49 +25,26 @@ function agentEnv() {
   return env
 }
 
-export function claudeAvailable() {
-  try {
-    const r = spawnSync(CLAUDE_BIN, ['--version'], { timeout: 8000, encoding: 'utf8', shell: process.platform === 'win32' })
-    return r.status === 0 ? (r.stdout || '').trim() || 'claude' : ''
-  } catch {
-    return ''
-  }
-}
+/**
+ * Start a headless run of `toolId` in `cwd`.
+ * `repo` is the repo it belongs to (cwd may be a worktree inside it); `worktree` names that worktree.
+ * `resume` continues an existing session, for tools that support it.
+ */
+export function startTask({ toolId = 'claude-code', repo, cwd, prompt, resume = '', permissionMode = 'acceptEdits', title = '', worktree = null }) {
+  const tool = findTool(toolId)
+  if (!tool) throw new Error(`Unknown tool: ${toolId}`)
+  if (!tool.permissionModes.includes(permissionMode)) permissionMode = tool.permissionModes[0]
+  if (permissionMode === 'bypassPermissions' && !ALLOW_BYPASS) permissionMode = tool.permissionModes[0]
 
-export function permissionModes() {
-  return ['acceptEdits', 'plan', 'default', ...(ALLOW_BYPASS ? ['bypassPermissions'] : [])]
-}
-
-function summariseEvent(ev) {
-  if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
-    const parts = []
-    for (const c of ev.message.content) {
-      if (c.type === 'text' && c.text.trim()) parts.push(c.text.trim())
-      if (c.type === 'tool_use') {
-        const i = c.input || {}
-        const t = i.file_path || i.path || i.command || i.pattern || i.description || ''
-        parts.push(`→ ${c.name}${t ? ': ' + String(t).slice(0, 120) : ''}`)
-      }
-    }
-    return parts.join('\n')
-  }
-  if (ev.type === 'result') return ev.is_error ? `✗ ${ev.result || ev.subtype}` : `✓ Done${ev.result ? ': ' + String(ev.result).slice(0, 300) : ''}`
-  if (ev.type === 'system' && ev.subtype === 'init') return `Started in ${ev.cwd || ''} (${ev.model || 'model'})`
-  return ''
-}
-
-/** Start a headless agent in `cwd`. `resume` continues an existing session instead. */
-export function startTask({ cwd, prompt, resume = '', permissionMode = 'acceptEdits', title = '' }) {
-  if (!PERMISSION_MODES.has(permissionMode)) permissionMode = 'acceptEdits'
-  if (permissionMode === 'bypassPermissions' && !ALLOW_BYPASS) permissionMode = 'acceptEdits'
   const id = crypto.randomUUID()
-  const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', permissionMode]
-  if (resume) args.push('--resume', resume)
-
   const task = {
     id,
+    tool: tool.id,
+    toolName: tool.name,
+    repo: repo || cwd,
     cwd,
-    repo: cwd,
+    worktree: worktree ? path.basename(worktree.path) : '',
+    branch: worktree ? worktree.branch : '',
     prompt,
     title: title || prompt.replace(/\s+/g, ' ').slice(0, 100),
     sessionId: resume || '',
@@ -86,42 +62,44 @@ export function startTask({ cwd, prompt, resume = '', permissionMode = 'acceptEd
     if (!line) return
     task.log.push({ t: Date.now(), line })
     if (task.log.length > LOG_LIMIT) task.log.shift()
-    task.activity = line.split('\n').pop().slice(0, 140)
     task.updatedAt = Date.now()
   }
 
   let proc
   try {
-    proc = spawn(CLAUDE_BIN, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: agentEnv(), shell: process.platform === 'win32' })
+    proc = spawn(tool.bin, tool.args(prompt, { permissionMode, resume }), {
+      cwd, stdio: ['ignore', 'pipe', 'pipe'], env: agentEnv(), shell: process.platform === 'win32',
+    })
   } catch (err) {
     task.status = 'error'
-    push(`Could not start claude: ${err.message}`)
+    task.activity = `Could not start ${tool.bin}: ${err.message}`
+    push(task.activity)
     return task
   }
   task.proc = proc
 
-  let buf = ''
-  proc.stdout.on('data', (chunk) => {
-    buf += chunk
-    let nl
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl)
-      buf = buf.slice(nl + 1)
-      if (!line.trim()) continue
-      try {
-        const ev = JSON.parse(line)
-        if (ev.session_id && !task.sessionId) task.sessionId = ev.session_id
-        if (ev.type === 'result') task.status = ev.is_error ? 'error' : 'waiting'
-        push(summariseEvent(ev))
-      } catch {
-        push(line.slice(0, 300))
+  const lines = (stream, fn) => {
+    let buf = ''
+    stream.on('data', (chunk) => {
+      buf += chunk
+      let nl
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl)
+        buf = buf.slice(nl + 1)
+        if (line.trim()) fn(line)
       }
-    }
+    })
+  }
+  lines(proc.stdout, (line) => push(tool.parse(line, task)))
+  lines(proc.stderr, (line) => {
+    push(line.slice(0, 300))
+    // Tools that talk on stderr (most of them, for progress) still count as activity.
+    if (!tool.watches) task.activity = line.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').trim().slice(0, 140) || task.activity
   })
-  proc.stderr.on('data', (chunk) => push(String(chunk).trim().slice(0, 300)))
   proc.on('error', (err) => {
     task.status = 'error'
-    push(`Could not start claude: ${err.message}`)
+    task.activity = `Could not start ${tool.bin}: ${err.message}`
+    push(task.activity)
   })
   proc.on('close', (code) => {
     task.exitCode = code
@@ -153,8 +131,13 @@ export function listTasks() {
   return [...tasks.values()].map(publicTask)
 }
 
-/** Forget finished tasks after a while; their transcripts live on as ordinary threads. */
-export function pruneTasks(maxAgeMs = 6 * 60 * 60 * 1000) {
+export function forgetTask(id) {
+  const t = tasks.get(id)
+  if (t && !t.proc) tasks.delete(id)
+}
+
+/** Forget finished tasks after a while; Claude Code ones live on as ordinary threads. */
+export function pruneTasks(maxAgeMs = 24 * 60 * 60 * 1000) {
   const now = Date.now()
   for (const [id, t] of tasks) if (!t.proc && now - t.updatedAt > maxAgeMs) tasks.delete(id)
 }
@@ -212,8 +195,4 @@ export function openUrl(url) {
 
 export function revealFolder(dir) {
   return openUrl(path.resolve(dir))
-}
-
-export function resumeCommand(sessionId) {
-  return `${CLAUDE_BIN} --resume ${sessionId}`
 }

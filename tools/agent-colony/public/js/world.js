@@ -1,47 +1,52 @@
-// The ground, the scattered rocks, and the landing ship in the middle.
+// The woods: a flat forest floor, trees and rocks kept off the plots, and the log cabin in the
+// middle where new agents come out and archived ones go home.
 import * as THREE from 'three'
 import { M, mesh, cyl, box, rng, hexToWorld, inHex, HEX_R } from './kit.js'
 
-export const SAND = new THREE.Color('#e9c7a2')
+export const FOG = new THREE.Color('#b9c9b0')
 
-function noise(x, z) {
-  return (
-    Math.sin(x * 0.045) * Math.cos(z * 0.05) * 0.9 +
-    Math.sin(x * 0.13 + 1.7) * Math.sin(z * 0.11 + 0.3) * 0.35 +
-    Math.sin(x * 0.31 + z * 0.27) * 0.12
-  )
-}
-
+/** A plain disc of forest floor with a little colour variation. No terrain, no dunes. */
 export function createGround(scene) {
-  const size = 900
-  const geo = new THREE.PlaneGeometry(size, size, 180, 180)
+  const geo = new THREE.CircleGeometry(600, 96, 0, Math.PI * 2)
   geo.rotateX(-Math.PI / 2)
   const pos = geo.attributes.position
   const colors = []
-  const a = new THREE.Color('#f0d2b0')
-  const b = new THREE.Color('#d9a881')
+  const a = new THREE.Color('#6f8f4e')
+  const b = new THREE.Color('#556f3c')
   const c = new THREE.Color()
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i)
     const z = pos.getZ(i)
-    const d = Math.hypot(x, z)
-    // Flat in the middle where the colony is, rolling dunes further out.
-    const amp = THREE.MathUtils.smoothstep(d, 40, 160)
-    const y = noise(x, z) * (0.25 + amp * 3.5) - 0.15
-    pos.setY(i, y)
-    c.copy(a).lerp(b, THREE.MathUtils.clamp(0.5 + noise(x * 2.3, z * 2.1) * 0.35, 0, 1))
+    const n = Math.sin(x * 0.07) * Math.cos(z * 0.06) * 0.5 + Math.sin(x * 0.19 + z * 0.13) * 0.25 + 0.5
+    c.copy(a).lerp(b, THREE.MathUtils.clamp(n, 0, 1))
     colors.push(c.r, c.g, c.b)
   }
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
-  geo.computeVertexNormals()
-  const ground = mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: false }), { cast: false })
+  const ground = mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 }), { cast: false })
   ground.name = 'ground'
   scene.add(ground)
+
+  // A worn dirt clearing round the cabin
+  const clearing = mesh(new THREE.CircleGeometry(6.1, 40), new THREE.MeshStandardMaterial({ color: '#8a6a47', roughness: 1 }), { cast: false })
+  clearing.rotation.x = -Math.PI / 2
+  clearing.position.y = 0.02
+  scene.add(clearing)
   return ground
 }
 
-/** Boulders and pebbles, kept off the plots. Rebuilt when the colony's footprint changes. */
-export class Rocks {
+// Shared tree parts, merged into instanced meshes so a whole forest is a handful of draw calls.
+const mat = (color) => new THREE.MeshStandardMaterial({ color, roughness: 0.9, flatShading: true })
+const PINE_DARK = mat('#2f5a3a')
+const PINE_LIGHT = mat('#3f7045')
+const LEAF = mat('#5f8f3e')
+const LEAF_AUTUMN = mat('#c98b3a')
+const TRUNK = mat('#6b4a32')
+const MOSS_ROCK = mat('#7d8479')
+const CAP = mat('#c9503f')
+const STEM = mat('#efe6d2')
+
+/** Trees, rocks and mushrooms, kept off the plots. Rebuilt when the colony's footprint changes. */
+export class Woods {
   constructor(scene) {
     this.scene = scene
     this.group = new THREE.Group()
@@ -53,105 +58,147 @@ export class Rocks {
     const sig = tiles.map((t) => t.join(',')).sort().join(';')
     if (sig === this.signature) return
     this.signature = sig
+    for (const child of this.group.children) child.dispose?.()
     this.group.clear()
+
     const centres = [[0, 0], ...tiles].map(([q, r]) => hexToWorld(q, r))
-    const blocked = (x, z, pad) => centres.some((p) => inHex(x - p.x, z - p.z, HEX_R + pad)) || Math.hypot(x, z) < 9
-    const rand = rng(7)
-    const geo = new THREE.IcosahedronGeometry(1, 0)
-    const make = (count, minR, maxR, scaleMin, scaleMax, material, pad) => {
-      const inst = new THREE.InstancedMesh(geo, material, count)
+    const blocked = (x, z, pad) => centres.some((p) => inHex(x - p.x, z - p.z, HEX_R + pad))
+    let reach = HEX_R
+    for (const p of centres) reach = Math.max(reach, p.length() + HEX_R)
+    const rand = rng(11)
+
+    // Scatter `count` things in a ring outside the colony, denser near its edge.
+    const scatter = (count, pad, minR, maxR) => {
+      const out = []
+      for (let tries = 0; out.length < count && tries < count * 30; tries++) {
+        const ang = rand() * Math.PI * 2
+        const rad = minR + Math.pow(rand(), 1.6) * (maxR - minR)
+        const x = Math.cos(ang) * rad
+        const z = Math.sin(ang) * rad
+        if (!blocked(x, z, pad)) out.push([x, z, 0.7 + rand() * 0.7, rand() * Math.PI * 2])
+      }
+      return out
+    }
+
+    const instanced = (geo, material, spots, place) => {
+      const inst = new THREE.InstancedMesh(geo, material, spots.length)
       inst.castShadow = true
       inst.receiveShadow = true
       const m = new THREE.Matrix4()
-      const q = new THREE.Quaternion()
-      const e = new THREE.Euler()
-      let n = 0
-      for (let tries = 0; n < count && tries < count * 20; tries++) {
-        const ang = rand() * Math.PI * 2
-        const rad = minR + Math.sqrt(rand()) * (maxR - minR)
-        const x = Math.cos(ang) * rad
-        const z = Math.sin(ang) * rad
-        if (blocked(x, z, pad)) continue
-        const s = scaleMin + Math.pow(rand(), 2.5) * (scaleMax - scaleMin)
-        e.set(rand() * 3, rand() * 3, rand() * 3)
-        q.setFromEuler(e)
-        m.compose(new THREE.Vector3(x, s * 0.35 + noise(x, z) * 0.3 - 0.1, z), q, new THREE.Vector3(s, s * (0.6 + rand() * 0.5), s * (0.8 + rand() * 0.4)))
-        inst.setMatrixAt(n++, m)
-      }
-      inst.count = n
+      spots.forEach((s, i) => inst.setMatrixAt(i, place(m, ...s)))
       this.group.add(inst)
     }
-    make(420, 10, 260, 0.5, 3.4, M.rock, 2.5)
-    make(140, 10, 60, 0.4, 1.4, M.rock, 1.5)
-    make(1100, 8, 170, 0.1, 0.45, M.rockDark, 0.8)
+    const at = (m, x, y, z, s, sy, rot) =>
+      m.compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot), new THREE.Vector3(s, sy, s))
+
+    // Pines: trunk plus three stacked cones
+    const pines = scatter(420, 3, reach * 0.6, reach + 110)
+    const cone = new THREE.ConeGeometry(1.6, 2.6, 7)
+    instanced(new THREE.CylinderGeometry(0.22, 0.3, 1.6, 6), TRUNK, pines, (m, x, z, s, r) => at(m, x, 0.8 * s, z, s, s, r))
+    instanced(cone, PINE_DARK, pines, (m, x, z, s, r) => at(m, x, 2.4 * s, z, s, s, r))
+    instanced(cone, PINE_LIGHT, pines, (m, x, z, s, r) => at(m, x, 3.6 * s, z, s * 0.78, s * 0.85, r + 0.4))
+    instanced(cone, PINE_DARK, pines, (m, x, z, s, r) => at(m, x, 4.7 * s, z, s * 0.52, s * 0.7, r + 0.8))
+
+    // Round leafy trees, a few turning
+    const oaks = scatter(140, 3.4, reach * 0.6, reach + 70)
+    const blob = new THREE.IcosahedronGeometry(1.5, 0)
+    instanced(new THREE.CylinderGeometry(0.25, 0.32, 2, 6), TRUNK, oaks, (m, x, z, s, r) => at(m, x, 1 * s, z, s, s, r))
+    const green = oaks.filter((_, i) => i % 5)
+    const autumn = oaks.filter((_, i) => !(i % 5))
+    instanced(blob, LEAF, green, (m, x, z, s, r) => at(m, x, 2.8 * s, z, s, s * 0.9, r))
+    instanced(blob, LEAF_AUTUMN, autumn, (m, x, z, s, r) => at(m, x, 2.8 * s, z, s, s * 0.9, r))
+
+    // Mossy rocks
+    const rocks = scatter(90, 1, 8, reach + 60)
+    instanced(new THREE.DodecahedronGeometry(0.7, 0), MOSS_ROCK, rocks, (m, x, z, s, r) => at(m, x, 0.2 * s, z, s, s * 0.6, r))
+
+    // Red-capped mushrooms in little clumps near the plots
+    const shrooms = scatter(160, 0.6, 6, reach + 14)
+    instanced(new THREE.CylinderGeometry(0.06, 0.08, 0.3, 6), STEM, shrooms, (m, x, z, s, r) => at(m, x, 0.15 * s, z, s, s, r))
+    instanced(new THREE.SphereGeometry(0.2, 8, 5, 0, Math.PI * 2, 0, Math.PI / 2), CAP, shrooms, (m, x, z, s, r) => at(m, x, 0.28 * s, z, s, s * 0.8, r))
   }
 }
 
-/** The ship: where new threads walk out from and archived ones walk back into. */
-export function createShip(scene) {
+/** The log cabin: where new threads walk out from and archived ones walk back into. */
+export function createCabin(scene) {
   const g = new THREE.Group()
-  // Landing pad
-  const pad = mesh(new THREE.CylinderGeometry(5.9, 6.2, 0.25, 40), new THREE.MeshStandardMaterial({ color: '#d9b18e', roughness: 1 }), { cast: false })
-  pad.position.y = 0.05
-  g.add(pad)
-  const ring = mesh(new THREE.TorusGeometry(5.2, 0.08, 6, 60), M.white, { cast: false })
-  ring.rotation.x = Math.PI / 2
-  ring.position.y = 0.2
-  g.add(ring)
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2
-    const light = mesh(new THREE.SphereGeometry(0.14, 8, 6), new THREE.MeshStandardMaterial({ color: '#ffb35c', emissive: '#ff8a2a', emissiveIntensity: 1.2 }))
-    light.position.set(Math.cos(a) * 5.65, 0.22, Math.sin(a) * 5.65)
-    g.add(light)
-  }
+  const log = mat('#8a5a36')
+  const logDark = mat('#6e4527')
+  const roof = mat('#4a3a33')
+  const stone = mat('#8d8a82')
 
-  // Hull: a fat white egg with a red nose, on four legs
-  const hull = mesh(new THREE.SphereGeometry(2.6, 20, 14), M.white)
-  hull.scale.set(1, 1.08, 1)
-  hull.position.y = 4.1
-  g.add(hull)
-  const nose = mesh(new THREE.SphereGeometry(1.05, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), M.red)
-  nose.position.y = 6.45
-  nose.scale.set(1, 0.7, 1)
-  g.add(nose)
-  const belt = mesh(new THREE.CylinderGeometry(2.62, 2.62, 0.35, 24, 1, true), M.band)
-  belt.position.y = 3.9
-  g.add(belt)
+  // Walls of stacked logs
+  const W = 5.2
+  const D = 4.2
   for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2 + 0.3
-    const win = mesh(new THREE.SphereGeometry(0.26, 10, 8), M.glass)
-    win.position.set(Math.cos(a) * 2.5, 4.9, Math.sin(a) * 2.5)
+    const y = 0.25 + i * 0.42
+    const m = i % 2 ? log : logDark
+    for (const s of [-1, 1]) {
+      const front = mesh(new THREE.CylinderGeometry(0.22, 0.22, W + 0.5, 7), m)
+      front.rotation.z = Math.PI / 2
+      front.position.set(0, y, s * D / 2)
+      g.add(front)
+      const side = mesh(new THREE.CylinderGeometry(0.22, 0.22, D + 0.5, 7), m)
+      side.rotation.x = Math.PI / 2
+      side.position.set(s * W / 2, y + 0.21, 0)
+      g.add(side)
+    }
+  }
+  g.add(box(W - 0.2, 2.6, D - 0.2, logDark, 0, 0, 0))
+
+  // A-frame roof: two slabs
+  for (const s of [-1, 1]) {
+    const slab = box(W + 1.2, 0.2, D / 2 + 1.1, roof)
+    slab.position.set(0, 3.55, s * (D / 4 + 0.35))
+    slab.rotation.x = s * 0.62
+    g.add(slab)
+  }
+  // Gable ends
+  const gable = new THREE.Shape()
+  gable.moveTo(-D / 2 - 0.1, 0)
+  gable.lineTo(D / 2 + 0.1, 0)
+  gable.lineTo(0, 1.55)
+  gable.lineTo(-D / 2 - 0.1, 0)
+  const gGeo = new THREE.ExtrudeGeometry(gable, { depth: 0.2, bevelEnabled: false })
+  for (const s of [-1, 1]) {
+    const e = mesh(gGeo, log)
+    e.rotation.y = Math.PI / 2
+    e.position.set(s * (W / 2 - 0.1) - 0.1, 2.7, 0)
+    g.add(e)
+  }
+  // Chimney
+  g.add(box(0.8, 3.2, 0.8, stone, 1.6, 1.8, -0.9))
+
+  // Door, windows, porch facing +z
+  const door = box(1.1, 1.9, 0.1, mat('#5a3a22'), 0, 0.1, D / 2 + 0.25)
+  g.add(door)
+  for (const s of [-1, 1]) {
+    const win = box(0.9, 0.8, 0.08, new THREE.MeshStandardMaterial({ color: '#ffd98a', emissive: '#ffb347', emissiveIntensity: 0.9 }), s * 1.6, 1.1, D / 2 + 0.24)
     g.add(win)
   }
-  const skirt = cyl(1.8, 2.3, 1.2, 16, M.shell, 0, 1.7)
-  g.add(skirt)
-  for (let i = 0; i < 4; i++) {
-    const a = (i / 4) * Math.PI * 2 + Math.PI / 4
-    const leg = mesh(new THREE.CylinderGeometry(0.13, 0.13, 3.6, 6), M.metal)
-    leg.position.set(Math.cos(a) * 2.5, 1.7, Math.sin(a) * 2.5)
-    leg.rotation.z = Math.cos(a) * 0.35
-    leg.rotation.x = -Math.sin(a) * 0.35
-    g.add(leg)
-    const foot = cyl(0.55, 0.65, 0.18, 12, M.white, Math.cos(a) * 3.1, 0.15, Math.sin(a) * 3.1)
-    g.add(foot)
+  const porch = box(W, 0.18, 1.6, logDark, 0, 0, D / 2 + 0.9)
+  g.add(porch)
+  for (const s of [-1, 1]) g.add(cyl(0.12, 0.12, 2.4, 6, log, s * (W / 2 - 0.2), 0.1, D / 2 + 1.55))
+  const awning = box(W + 0.2, 0.14, 1.9, roof, 0, 2.45, D / 2 + 0.9)
+  awning.rotation.x = 0.15
+  g.add(awning)
+
+  // A lantern by the door: the thing that glows
+  const lantern = mesh(new THREE.SphereGeometry(0.16, 8, 6), new THREE.MeshStandardMaterial({ color: '#ffe3a1', emissive: '#ffae3a', emissiveIntensity: 1.5 }))
+  lantern.position.set(0.95, 2.0, D / 2 + 0.45)
+  g.add(lantern)
+  g.userData.beacon = lantern
+
+  // Woodpile
+  for (let i = 0; i < 5; i++) {
+    const l = mesh(new THREE.CylinderGeometry(0.16, 0.16, 1.2, 6), i % 2 ? log : logDark)
+    l.rotation.x = Math.PI / 2
+    l.position.set(-W / 2 - 0.6 + (i % 3) * 0.34, 0.18 + Math.floor(i / 3) * 0.3, -0.6)
+    g.add(l)
   }
-  // Ramp down towards +z, where the bots come and go
-  const ramp = box(1.4, 0.12, 3.6, M.shell)
-  ramp.position.set(0, 1.05, 3.3)
-  ramp.rotation.x = 0.5
-  g.add(ramp)
-  const door = mesh(new THREE.CircleGeometry(0.75, 20), M.dark)
-  door.position.set(0, 2.15, 2.02)
-  g.add(door)
-  // Antenna
-  g.add(cyl(0.05, 0.05, 1.4, 6, M.metal, 1.2, 6.2, 0))
-  const tip = mesh(new THREE.SphereGeometry(0.12, 8, 6), new THREE.MeshStandardMaterial({ color: '#ff5b5b', emissive: '#ff2a2a', emissiveIntensity: 2 }))
-  tip.position.set(1.2, 7.65, 0)
-  g.add(tip)
-  g.userData.beacon = tip
   scene.add(g)
   return g
 }
 
-/** Where a bot steps off the ramp. */
-export const SHIP_DOOR = new THREE.Vector3(0, 0, 5.2)
+/** Where a bot steps off the porch. */
+export const SHIP_DOOR = new THREE.Vector3(0, 0, 4.4)

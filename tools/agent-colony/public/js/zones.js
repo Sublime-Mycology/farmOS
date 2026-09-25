@@ -3,34 +3,39 @@ import * as THREE from 'three'
 import { M, mesh, box, cyl, rng, hexToWorld, HEX_R, DECK_H, DECK_TOP, slotOffset, SLOTS_PER_TILE } from './kit.js'
 
 let deckTexture = null
+/** Wooden decking: staggered planks with dark seams and a little grain. */
 function gridTexture() {
   if (deckTexture) return deckTexture
   const c = document.createElement('canvas')
   c.width = c.height = 256
   const g = c.getContext('2d')
-  g.fillStyle = '#565a66'
-  g.fillRect(0, 0, 256, 256)
-  // Slight per-panel variation, then panel seams
   const rand = rng(3)
-  for (let y = 0; y < 4; y++) {
-    for (let x = 0; x < 4; x++) {
-      const v = 82 + Math.floor(rand() * 10)
-      g.fillStyle = `rgb(${v},${v + 3},${v + 12})`
-      g.fillRect(x * 64 + 2, y * 64 + 2, 60, 60)
+  const rows = 8
+  const h = 256 / rows
+  for (let row = 0; row < rows; row++) {
+    let x = -rand() * 128
+    while (x < 256) {
+      const w = 90 + rand() * 80
+      const v = rand()
+      g.fillStyle = `rgb(${Math.round(128 + v * 26)},${Math.round(90 + v * 18)},${Math.round(58 + v * 12)})`
+      g.fillRect(x, row * h, w, h)
+      g.strokeStyle = 'rgba(60,38,20,0.18)'
+      g.lineWidth = 1
+      for (let k = 0; k < 3; k++) {
+        const y = row * h + 5 + rand() * (h - 10)
+        g.beginPath(); g.moveTo(x + 4, y); g.bezierCurveTo(x + w * 0.3, y + 2, x + w * 0.6, y - 2, x + w - 4, y); g.stroke()
+      }
+      g.fillStyle = 'rgba(45,28,14,0.85)'
+      g.fillRect(x + w - 2, row * h, 2, h)
+      x += w
     }
+    g.fillStyle = 'rgba(45,28,14,0.9)'
+    g.fillRect(0, row * h + h - 2, 256, 2)
   }
-  g.strokeStyle = 'rgba(30,32,40,0.9)'
-  g.lineWidth = 3
-  for (let i = 0; i <= 4; i++) {
-    g.beginPath(); g.moveTo(i * 64, 0); g.lineTo(i * 64, 256); g.stroke()
-    g.beginPath(); g.moveTo(0, i * 64); g.lineTo(256, i * 64); g.stroke()
-  }
-  g.fillStyle = 'rgba(255,255,255,0.08)'
-  for (let i = 0; i < 40; i++) g.fillRect(rand() * 256, rand() * 256, 2, 2)
   deckTexture = new THREE.CanvasTexture(c)
   deckTexture.colorSpace = THREE.SRGBColorSpace
   deckTexture.wrapS = deckTexture.wrapT = THREE.RepeatWrapping
-  deckTexture.repeat.set(3.2, 3.2)
+  deckTexture.repeat.set(2.4, 2.4)
   deckTexture.anisotropy = 8
   return deckTexture
 }

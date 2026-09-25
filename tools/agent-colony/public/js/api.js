@@ -12,7 +12,8 @@ async function request(method, url, body) {
 export const api = {
   state: () => request('GET', '/api/state'),
   task: (id) => request('GET', `/api/tasks/${id}`),
-  startTask: (repo, prompt, permissionMode) => request('POST', '/api/tasks', { repo, prompt, permissionMode }),
+  startTask: (repo, prompt, opts) => request('POST', '/api/tasks', { repo, prompt, ...opts }),
+  worktree: (id) => request('GET', `/api/threads/${id}/worktree`),
   stopTask: (id) => request('POST', `/api/tasks/${id}/stop`),
   open: (id, mode) => request('POST', `/api/threads/${id}/open`, { mode }),
   archive: (id) => request('POST', `/api/threads/${id}/archive`),

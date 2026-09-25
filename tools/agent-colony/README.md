@@ -1,13 +1,13 @@
 # Agent Colony
 
-Watch your Claude Code agents work, as a little colony of bots on a Mars-coloured plain, and
-launch new ones from the same screen.
+Watch your coding agents work: a little colony of bots on wooden plots in a clearing in the woods.
+Launch new agents from the same screen, each in its own copy of the repo.
 
-- **Each repo is a hex zone**, with a coloured kerb. A repo gets one more tile for every seven threads.
+- **Each repo is a hex plot**, with a coloured border. A repo gets one more tile for every seven threads.
 - **Each thread (session) is a building plus a bot.** The bigger the transcript, the more finished
   the building looks.
 - **Subagents** show up as smaller bots helping at their parent's building.
-- **New agents walk out of the ship** in the middle. Archived threads walk back in.
+- **New agents walk out of the log cabin** in the middle. Archived threads walk back in.
 
 | Bot is… | Meaning |
 | --- | --- |
@@ -21,55 +21,108 @@ launch new ones from the same screen.
 
 ```bash
 cd tools/agent-colony
-npm install          # only dependency is three.js, served to the browser
+npm install          # the only dependency is three.js, served to the browser
 npm start            # http://127.0.0.1:5274/
 ```
 
 `npm run demo` shows a made-up colony, so you can try it without spending anything. If
 `~/.claude/projects` has no sessions yet, the demo starts on its own.
 
-Needs Node 20+ and, to launch agents, the `claude` CLI on your `PATH`.
+Needs Node 20+ and git. To launch agents you also need at least one agent CLI on your `PATH`
+(see [Tools](#tools)).
 
 ## Running several agents at once
 
-1. Click a zone, or a repo in the right-hand panel.
-2. **New conversation** (or press `C`). Type the task and press **Launch agent** (Ctrl+Enter).
-3. A bot walks out of the ship to that repo and starts building. Launch as many as you like.
-   Each one is its own headless `claude -p` process, working in parallel.
-4. Click any bot or building to see a card beside it with its title, branch, model and latest action:
-   - **Open** resumes the thread in a terminal (`claude --resume <id>`), in the Claude desktop app, or
-     copies the command. Choose which in ⚙ Settings.
-   - **Archive** sends the bot home. This only hides the thread here and never touches Claude Code.
-   - **Follow-up box**: give a finished agent its next task. It resumes the same session.
-   - **Stop this agent** interrupts a running agent that was launched from here.
+1. Click a plot, or a repo in the right-hand panel.
+2. **New conversation** (or press `C`). Type the task, and pick the **tool** and what it **may do**.
+3. Leave **Own worktree** ticked and press **Launch agent** (Ctrl+Enter). Launch as many as you like.
 
-Sessions you start yourself in the terminal, VS Code or the desktop app show up too. The colony
-reads `~/.claude/projects/*.jsonl` (read-only) every 2.5 seconds.
+### Every agent gets its own worktree
+
+Each launched agent works in a fresh git worktree, so agents running at the same time never edit
+the same files:
+
+```
+<repo>/.claude/worktrees/<task-slug>     on a new branch  colony/<task-slug>, cut from your current HEAD
+```
+
+- It is added to `.git/info/exclude` (local only), so your main checkout stays clean.
+- Claude Code keeps its own worktrees in the same place, so those sessions join the same plot.
+- The card for the thread shows its branch, how many files are uncommitted and how many commits
+  it has made.
+- When you're done, **Remove worktree** deletes the folder but **keeps the branch**, so you can
+  merge it, open a PR or delete it as usual. If there are uncommitted changes, you're asked first.
+- If the folder isn't a git repo, the agent works in the folder itself, and you're told so.
+
+### The card beside a bot
+
+- **Open**: Claude Code threads resume in a terminal (`claude --resume <id>`), in the desktop app,
+  or by copying the command (choose in ⚙ Settings). Threads from other tools open a terminal in their worktree.
+- **Archive**: sends the bot home. This only hides the thread here.
+- **Follow-up box**: give a finished Claude Code agent its next task, in the same session and worktree.
+- **Stop this agent**: interrupts a run launched from here.
+
+## Tools
+
+The colony talks to each coding-agent CLI through a small **adapter** in `lib/tools.mjs`. An
+adapter has two independent halves, so support can grow one tool and one half at a time:
+
+| Half | What it does | Needed for |
+| --- | --- | --- |
+| **launch** | How to start a headless run, and how to read its output into "what is it doing / is it done" | Launching from the colony |
+| **watch** | Reading the tool's own session history from disk | Seeing sessions you started *outside* the colony, and ones from before the server started |
+
+| Tool | Launch | Watch | Follow-ups |
+| --- | --- | --- | --- |
+| Claude Code | ✅ `claude -p` | ✅ `~/.claude/projects` | ✅ |
+| Codex | ✅ `codex exec` | — | — |
+| Aider | ✅ `aider --message` | — | — |
+| Anything else | ✅ via `data/tools.json` | — | — |
+
+Only tools actually on your `PATH` are offered. Runs of tools without a *watch* half are shown
+from the running process: live activity while they work, then done or error. They stay on the map
+for 24 hours or until you archive them (only while the server keeps running).
+
+**Adding any other CLI, no code needed:** create `data/tools.json`:
+
+```json
+[
+  { "id": "gemini", "name": "Gemini", "command": ["gemini", "-p", "{prompt}"] },
+  { "id": "goose",  "name": "Goose",  "command": ["goose", "run", "-t", "{prompt}"] }
+]
+```
+
+**Growing a tool to full support** is one adapter entry in `lib/tools.mjs`:
+
+1. `args()` and `parse()`: the launch half. `parse` gets each output line and sets `task.activity`,
+   `task.status` and `task.sessionId`. JSON output modes are much better than plain text here.
+2. `canResume` + `resume`: for follow-ups in the same session.
+3. `watches` + a scanner like `lib/scan.mjs`: turn the tool's session files into threads
+   (`{ id, repo, cwd, title, status, updatedAt, size, … }`). The server just merges every tool's
+   list. This is the most work, because every tool stores history differently.
+
+The Codex and Aider adapters haven't been run against the real tools yet. If one misbehaves
+(for example, a flag renamed in a newer version), the fix is a line or two in its adapter.
 
 ### What launched agents are allowed to do
 
-Headless agents can't ask you for permission, so choose up front in ⚙ Settings → *New agents may*:
+Headless agents can't stop to ask you, so choose up front in the composer:
 
-- **Edit files (acceptEdits)**: the default. Agents can read and edit files. Shell commands
-  that need approval are refused.
-- **Plan only**: agents look and plan but change nothing.
-- **Ask**: only tools that need no approval.
-
-`bypassPermissions` (anything goes) is hidden unless you start the server with
-`COLONY_ALLOW_BYPASS=1`. Use it only in a sandbox or a throwaway worktree.
-
-Tip: for agents editing the same repo at once, give each its own git worktree so they don't trip over
-each other. Worktree sessions under `<repo>/.claude/worktrees/…` are grouped into their repo.
+- **May edit files**: the default. Claude Code uses `acceptEdits` (shell commands needing approval
+  are refused). Codex uses `--full-auto` (sandboxed to the worktree).
+- **Plan only**: look and plan, change nothing.
+- **Anything (no sandbox!)**: hidden unless the server is started with `COLONY_ALLOW_BYPASS=1`.
+  The worktree limits the damage to your files, but not to the rest of your machine.
 
 ## Controls
 
 | | |
 | --- | --- |
 | Drag / right-drag / scroll | Orbit / pan / zoom |
-| Click bot, building or zone | Select |
+| Click bot, building or plot | Select |
 | `H` | Whole colony |
 | `F` | Toggle following the selected bot |
-| `L` | Show every zone name (by default only busy zones are labelled) |
+| `L` | Show every plot name (by default only busy plots are labelled) |
 | `C` | New conversation in the selected repo |
 | `V` | Mark the selected thread as viewed |
 | `Esc` | Deselect |
@@ -84,30 +137,33 @@ node server.mjs [--demo] [--port 5274] [--host 127.0.0.1] [--no-auto-demo]
 | --- | --- |
 | `CLAUDE_CONFIG_DIR` | Where Claude Code keeps its data (default `~/.claude`) |
 | `COLONY_CLAUDE_BIN` | Path to the `claude` binary |
-| `COLONY_ALLOW_BYPASS=1` | Offer `bypassPermissions` for launched agents |
+| `COLONY_ALLOW_BYPASS=1` | Offer unsandboxed runs |
 
 The server listens on localhost only. It answers only requests addressed to localhost, and state
-changes need a custom header, so other websites can't drive it. The only file it writes is
-`data/colony.json`: the map layout (zones stay put between runs), plus what you archived or viewed.
+changes need a custom header, so other websites can't drive it. It writes `data/colony.json` (the
+map, plus what you archived or viewed) and creates and removes worktrees under
+`<repo>/.claude/worktrees/`. Nothing else.
 
 ## Layout of the code
 
 ```
-server.mjs          HTTP server + API (no dependencies)
-lib/scan.mjs        reads Claude Code transcripts → threads with a status
-lib/hex.mjs         sticky hex-zone layout (shared with the browser)
-lib/agents.mjs      launches/stops headless `claude -p` agents, opens terminals
-lib/demo.mjs        the made-up colony
-public/js/main.js   renderer, camera, picking, sync with the server
-public/js/world.js  terrain, rocks, the ship
-public/js/zones.js  hex decks and kerbs
+server.mjs              HTTP server + API (no dependencies)
+lib/tools.mjs           tool adapters: how to launch/parse/resume each agent CLI
+lib/agents.mjs          runs tasks (one process per agent), opens terminals
+lib/worktrees.mjs       one git worktree per task; summary; safe removal
+lib/scan.mjs            Claude Code "watch": transcripts → threads with a status
+lib/hex.mjs             sticky hex-plot layout (shared with the browser)
+lib/demo.mjs            the made-up colony
+public/js/main.js       renderer, camera, picking, sync with the server
+public/js/world.js      forest floor, trees, rocks, mushrooms, the cabin
+public/js/zones.js      wooden plots and their borders
 public/js/buildings.js  habitat pods, domes, water towers, depots, solar farms, labs
-public/js/bots.js   the crew: steering, animation, sparks
-public/js/hud.js    side panel, thread card, zone labels
+public/js/bots.js       the crew: steering, animation, sparks
+public/js/hud.js        side panel, composer, thread card, plot labels
 ```
 
 ## Credit
 
 Inspired by [Bot Crossing](https://github.com/jarrenrocks/bot-crossing) by Jarren Rocks (MIT).
-This is a separate, smaller implementation written from scratch. It adds launching and steering
-agents from inside the colony.
+This is a separate, smaller implementation written from scratch. It adds launching agents from
+several tools, each in its own worktree.

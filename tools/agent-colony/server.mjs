@@ -15,9 +15,11 @@ import { scanClaude, completion, isSessionId, countTranscripts } from './lib/sca
 import { layout, tilesNeeded } from './lib/hex.mjs'
 import { demoThreads } from './lib/demo.mjs'
 import {
-  claudeAvailable, permissionModes, startTask, stopTask, getTask, listTasks, pruneTasks,
-  openTerminal, openUrl, revealFolder, resumeCommand,
+  ALLOW_BYPASS, startTask, stopTask, getTask, listTasks, pruneTasks, forgetTask,
+  openTerminal, openUrl, revealFolder,
 } from './lib/agents.mjs'
+import { tool, describeTools } from './lib/tools.mjs'
+import { createWorktree, removeWorktree, worktreeSummary, isColonyWorktree } from './lib/worktrees.mjs'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const PUBLIC = path.join(ROOT, 'public')
@@ -60,18 +62,20 @@ function save() {
   }, 300)
 }
 
-const CLAUDE_VERSION = DEMO ? '' : claudeAvailable()
+const CLAUDE_VERSION = DEMO ? '' : tool('claude-code').version()
 
 // ---------------------------------------------------------------------------------------------
 // Demo tasks: pretend agents, so the launcher can be tried without spending anything.
 
 const demoTasks = new Map()
-function startDemoTask({ cwd, prompt }) {
+function startDemoTask({ repo, prompt, toolId = 'claude-code', worktree = true, title = '' }) {
   const id = crypto.randomUUID()
   const t = {
-    id, cwd, repo: cwd, prompt, title: prompt.slice(0, 100), sessionId: '', status: 'running',
+    id, cwd: repo, repo, prompt, title: title || prompt.slice(0, 100), sessionId: '', status: 'running',
+    tool: toolId, toolName: tool(toolId)?.name || toolId,
+    worktree: worktree ? `demo-${id.slice(0, 4)}` : '', branch: worktree ? `colony/demo-${id.slice(0, 4)}` : '',
     startedAt: Date.now(), updatedAt: Date.now(), activity: 'Reading the codebase…', alive: true,
-    log: [{ t: Date.now(), line: `Started (demo) in ${cwd}` }],
+    log: [{ t: Date.now(), line: `Started (demo) in ${repo}` }],
   }
   demoTasks.set(id, t)
   const steps = ['Grep: related code', 'Read: src/…', 'Edit: src/…', 'Bash: npm test', '✓ Done (demo)']
@@ -93,6 +97,10 @@ async function buildColony() {
   let threads = DEMO
     ? demoThreads({ viewed: state.viewed, completion })
     : await scanClaude({ viewed: state.viewed, now })
+  for (const t of threads) {
+    t.tool = 'claude-code'
+    t.toolName = 'Claude Code'
+  }
 
   // Launched tasks: fold live process state into their threads, or stand in until they have one.
   const tasks = DEMO ? [...demoTasks.values()] : listTasks()
@@ -107,15 +115,18 @@ async function buildColony() {
       } else if (task.status === 'error') {
         thread.status = 'error'
       }
-    } else if (task.alive || now - task.updatedAt < 60000) {
+    } else if (task.alive || !tool(task.tool)?.watches || now - task.updatedAt < 60000) {
+      // Tools we cannot read the history of are shown from the task for as long as we have it.
       threads.push({
         id: task.sessionId || `task-${task.id}`,
         taskId: task.id,
+        tool: task.tool,
+        toolName: task.toolName,
         repo: task.repo,
         cwd: task.cwd,
-        worktree: '',
+        worktree: task.worktree,
         title: task.title,
-        branch: '',
+        branch: task.branch,
         model: '',
         activity: task.activity,
         status: task.alive ? 'running' : task.status,
@@ -173,7 +184,7 @@ async function buildColony() {
     })
   }
   out.sort((a, b) => a.name.localeCompare(b.name))
-  return { now, demo: DEMO, claude: CLAUDE_VERSION, permissionModes: permissionModes(), archivedCount, repos: out }
+  return { now, demo: DEMO, claude: CLAUDE_VERSION, tools: describeTools(ALLOW_BYPASS || DEMO), archivedCount, repos: out }
 }
 
 let lastColony = null
@@ -254,20 +265,48 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/tasks') {
       const body = await readJson(req)
       const repo = knownRepo(body.repo)
-      const cwd = repo ? repo.path : null
-      if (!cwd) return send(res, 400, { error: 'Unknown repo' })
-      if (!existsSync(cwd) && !DEMO) return send(res, 400, { error: `Folder not found: ${cwd}` })
+      if (!repo) return send(res, 400, { error: 'Unknown repo' })
+      if (!existsSync(repo.path) && !DEMO) return send(res, 400, { error: `Folder not found: ${repo.path}` })
       const prompt = String(body.prompt || '').trim()
       if (!prompt) return send(res, 400, { error: 'Tell the agent what to do' })
-      if (!DEMO && !CLAUDE_VERSION) return send(res, 400, { error: 'The claude CLI was not found on PATH' })
-      const task = DEMO ? startDemoTask({ cwd, prompt }) : startTask({ cwd, prompt, permissionMode: body.permissionMode })
-      return send(res, 200, { ok: true, taskId: task.id })
+      const toolId = String(body.tool || 'claude-code')
+      const t = tool(toolId)
+      if (!t) return send(res, 400, { error: `Unknown tool: ${toolId}` })
+      const wantWorktree = body.worktree !== false
+      if (DEMO) {
+        const task = startDemoTask({ repo: repo.path, prompt, toolId, worktree: wantWorktree })
+        return send(res, 200, { ok: true, taskId: task.id })
+      }
+      if (!t.available) return send(res, 400, { error: `${t.name} (${t.bin}) was not found on PATH` })
+      let worktree = null
+      let note = ''
+      if (wantWorktree) {
+        try {
+          worktree = await createWorktree(repo.path, prompt)
+          if (!worktree) note = 'Not a git repo, so this agent is working in the folder itself.'
+        } catch (err) {
+          return send(res, 500, { error: `Could not create a worktree: ${String(err.stderr || err.message).trim()}` })
+        }
+      }
+      const task = startTask({
+        toolId, repo: repo.path, cwd: worktree ? worktree.path : repo.path, prompt, worktree,
+        permissionMode: body.permissionMode,
+      })
+      return send(res, 200, { ok: true, taskId: task.id, worktree, note })
     }
 
     const tm = /^\/api\/tasks\/([\w-]+)\/stop$/.exec(p)
     if (req.method === 'POST' && tm) return send(res, 200, { ok: stopTask(tm[1]) })
 
-    const m = /^\/api\/threads\/([\w-]+)\/(open|archive|unarchive|viewed|reply)$/.exec(p)
+    const wm = /^\/api\/threads\/([\w-]+)\/worktree$/.exec(p)
+    if (req.method === 'GET' && wm) {
+      const thread = findThread(wm[1])
+      if (!thread || !thread.worktree) return send(res, 200, null)
+      if (DEMO) return send(res, 200, { branch: thread.branch, changed: 3, commits: 1 })
+      return send(res, 200, await worktreeSummary(thread.repo, thread.cwd))
+    }
+
+    const m = /^\/api\/threads\/([\w-]+)\/(open|archive|unarchive|viewed|reply|remove-worktree)$/.exec(p)
     if (req.method === 'POST' && m) {
       const [, id, action] = m
       const thread = findThread(id)
@@ -279,20 +318,46 @@ const server = http.createServer(async (req, res) => {
       if (!thread) return send(res, 404, { error: 'Unknown thread' })
       if (action === 'archive') {
         state.archived[id] = Date.now()
+        if (thread.taskId && !thread.id.match(/^[0-9a-f]{8}-/)) forgetTask(thread.taskId)
         save()
         return send(res, 200, { ok: true })
+      }
+      if (action === 'remove-worktree') {
+        const body = await readJson(req)
+        if (thread.status === 'running') return send(res, 409, { error: 'That agent is still working in it' })
+        if (DEMO) {
+          state.archived[id] = Date.now()
+          save()
+          return send(res, 200, { ok: true })
+        }
+        if (!isColonyWorktree(thread.repo, thread.cwd)) return send(res, 400, { error: 'This thread is not in a colony worktree' })
+        const r = await removeWorktree(thread.repo, thread.cwd, { force: !!body.force })
+        if (r.ok) {
+          state.archived[id] = Date.now()
+          if (thread.taskId) forgetTask(thread.taskId)
+          save()
+        }
+        return send(res, r.ok ? 200 : 409, r)
       }
       if (action === 'viewed') {
         state.viewed[id] = Date.now()
         save()
         return send(res, 200, { ok: true })
       }
+      const t = tool(thread.tool) || tool('claude-code')
+      if (action === 'open' && !(t.resumeCommand && isSessionId(id))) {
+        // No session to resume (another tool, or not started yet): open a terminal in its folder.
+        const body = await readJson(req)
+        const command = 'git status'
+        if (DEMO || body.mode === 'copy' || !existsSync(thread.cwd)) return send(res, 200, { ok: false, command, cwd: thread.cwd, demo: DEMO })
+        return send(res, 200, { ok: await openTerminal(thread.cwd, command), command, cwd: thread.cwd })
+      }
       if (!isSessionId(id)) return send(res, 400, { error: 'This thread has no session yet' })
       if (action === 'open') {
         const body = await readJson(req)
         state.viewed[id] = Date.now()
         save()
-        const command = resumeCommand(id)
+        const command = t.resumeCommand(id)
         if (DEMO) return send(res, 200, { ok: false, command, cwd: thread.cwd, demo: true })
         let ok = false
         if (body.mode === 'app') ok = await openUrl(`claude://resume?session=${id}`)
@@ -305,13 +370,16 @@ const server = http.createServer(async (req, res) => {
         if (!prompt) return send(res, 400, { error: 'Empty message' })
         if (thread.status === 'running' && thread.taskId) return send(res, 409, { error: 'That agent is still working' })
         if (DEMO) {
-          const t = startDemoTask({ cwd: thread.cwd, prompt })
-          return send(res, 200, { ok: true, taskId: t.id })
+          const dt = startDemoTask({ repo: thread.repo, prompt, title: thread.title, worktree: false })
+          return send(res, 200, { ok: true, taskId: dt.id })
         }
-        if (!CLAUDE_VERSION) return send(res, 400, { error: 'The claude CLI was not found on PATH' })
+        if (!t.canResume || !t.available) return send(res, 400, { error: `${t.name} cannot take follow-ups here` })
         state.viewed[id] = Date.now()
         save()
-        const task = startTask({ cwd: thread.cwd, prompt, resume: id, permissionMode: body.permissionMode, title: thread.title })
+        const task = startTask({
+          toolId: t.id, repo: thread.repo, cwd: thread.cwd, prompt, resume: id, permissionMode: body.permissionMode, title: thread.title,
+          worktree: thread.worktree ? { path: thread.cwd, branch: thread.branch } : null,
+        })
         return send(res, 200, { ok: true, taskId: task.id })
       }
     }
@@ -347,5 +415,8 @@ if (!existsSync(THREE)) {
 server.listen(PORT, HOST, () => {
   console.log(`Agent Colony → http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/`)
   if (DEMO) console.log('Demo mode: a made-up colony, nothing real is launched.')
-  else console.log(CLAUDE_VERSION ? `Using ${CLAUDE_VERSION}` : 'claude CLI not found: watching only, launching disabled.')
+  else {
+    const found = describeTools(ALLOW_BYPASS).filter((t) => t.available).map((t) => t.name)
+    console.log(found.length ? `Can launch: ${found.join(', ')}` : 'No agent CLIs found on PATH: watching only.')
+  }
 })
