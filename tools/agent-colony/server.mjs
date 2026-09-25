@@ -7,6 +7,7 @@
 import http from 'node:http'
 import fs from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import crypto from 'node:crypto'
@@ -46,7 +47,7 @@ const PALETTE = ['#f2c94c', '#3d7bf2', '#2bb3a3', '#d9895b', '#9b6bf2', '#ef6f8a
 // ---------------------------------------------------------------------------------------------
 // Persistent state: the map, and what the user has archived or looked at.
 
-let state = { zones: {}, colors: {}, archived: {}, viewed: {} }
+let state = { zones: {}, colors: {}, archived: {}, viewed: {}, pinned: [], allowed: {} }
 try {
   state = { ...state, ...JSON.parse(await fs.readFile(STATE_FILE, 'utf8')) }
 } catch { /* first run */ }
@@ -146,6 +147,8 @@ async function buildColony() {
   threads = threads.filter((t) => !(state.archived[t.id] && t.updatedAt <= state.archived[t.id] + 5000))
 
   const repos = new Map()
+  // Repos you added by hand get a plot even before anything has run in them.
+  for (const dir of state.pinned || []) repos.set(dir, [])
   for (const t of threads) {
     if (!repos.has(t.repo)) repos.set(t.repo, [])
     repos.get(t.repo).push(t)
@@ -181,10 +184,28 @@ async function buildColony() {
       threads: list.slice().sort((a, b) => rank[a.status] - rank[b.status] || b.updatedAt - a.updatedAt),
       // Stable slot order for buildings: oldest thread gets the first plot.
       slots: list.map((t) => t.id),
+      allowedTools: state.allowed?.[repo] || [],
+      suggestedTools: DEMO ? [] : (await suggestedTools(repo)).filter((x) => !(state.allowed?.[repo] || []).includes(x)),
     })
   }
   out.sort((a, b) => a.name.localeCompare(b.name))
   return { now, demo: DEMO, claude: CLAUDE_VERSION, tools: describeTools(ALLOW_BYPASS || DEMO), archivedCount, repos: out }
+}
+
+/**
+ * Commands a repo's own .claude/settings.json asks to allow. Claude Code ignores these in folders
+ * you haven't trusted (and every worktree is a new folder), so the colony shows them and applies
+ * them only once you press Allow for that repo.
+ */
+const RULE = /^[A-Za-z]+(\([^()]{1,200}\))?$/
+async function suggestedTools(repo) {
+  try {
+    const s = JSON.parse(await fs.readFile(path.join(repo, '.claude', 'settings.json'), 'utf8'))
+    const allow = s?.permissions?.allow
+    return Array.isArray(allow) ? allow.filter((x) => typeof x === 'string' && RULE.test(x)).slice(0, 20) : []
+  } catch {
+    return []
+  }
 }
 
 let lastColony = null
@@ -290,7 +311,7 @@ const server = http.createServer(async (req, res) => {
       }
       const task = startTask({
         toolId, repo: repo.path, cwd: worktree ? worktree.path : repo.path, prompt, worktree,
-        permissionMode: body.permissionMode,
+        permissionMode: body.permissionMode, allowedTools: state.allowed?.[repo.path] || [],
       })
       return send(res, 200, { ok: true, taskId: task.id, worktree, note })
     }
@@ -379,9 +400,39 @@ const server = http.createServer(async (req, res) => {
         const task = startTask({
           toolId: t.id, repo: thread.repo, cwd: thread.cwd, prompt, resume: id, permissionMode: body.permissionMode, title: thread.title,
           worktree: thread.worktree ? { path: thread.cwd, branch: thread.branch } : null,
+          allowedTools: state.allowed?.[thread.repo] || [],
         })
         return send(res, 200, { ok: true, taskId: task.id })
       }
+    }
+
+    if (req.method === 'POST' && (p === '/api/repos/add' || p === '/api/repos/unpin')) {
+      const body = await readJson(req)
+      const dir = path.resolve(String(body.path || '').replace(/^~(?=$|[\\/])/, os.homedir()))
+      if (p === '/api/repos/unpin') {
+        state.pinned = (state.pinned || []).filter((x) => x !== dir)
+      } else {
+        let st = null
+        try { st = await fs.stat(dir) } catch { /* missing */ }
+        if (!st || !st.isDirectory()) return send(res, 400, { error: `No such folder: ${dir}` })
+        state.pinned = [...new Set([...(state.pinned || []), dir])]
+      }
+      save()
+      await colony()
+      return send(res, 200, { ok: true, path: dir })
+    }
+
+    if (req.method === 'POST' && p === '/api/repos/allow') {
+      const body = await readJson(req)
+      const repo = knownRepo(body.repo)
+      if (!repo) return send(res, 400, { error: 'Unknown repo' })
+      const tools = Array.isArray(body.tools) ? body.tools.filter((x) => typeof x === 'string' && RULE.test(x)) : []
+      if (!state.allowed) state.allowed = {}
+      if (tools.length) state.allowed[repo.path] = [...new Set(tools)]
+      else delete state.allowed[repo.path]
+      save()
+      await colony()
+      return send(res, 200, { ok: true, tools: state.allowed[repo.path] || [] })
     }
 
     if (req.method === 'POST' && p === '/api/repos/reveal') {

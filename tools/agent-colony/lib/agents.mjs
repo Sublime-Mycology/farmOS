@@ -30,7 +30,7 @@ function agentEnv() {
  * `repo` is the repo it belongs to (cwd may be a worktree inside it); `worktree` names that worktree.
  * `resume` continues an existing session, for tools that support it.
  */
-export function startTask({ toolId = 'claude-code', repo, cwd, prompt, resume = '', permissionMode = 'acceptEdits', title = '', worktree = null }) {
+export function startTask({ toolId = 'claude-code', repo, cwd, prompt, resume = '', permissionMode = 'acceptEdits', title = '', worktree = null, allowedTools = [] }) {
   const tool = findTool(toolId)
   if (!tool) throw new Error(`Unknown tool: ${toolId}`)
   if (!tool.permissionModes.includes(permissionMode)) permissionMode = tool.permissionModes[0]
@@ -67,7 +67,7 @@ export function startTask({ toolId = 'claude-code', repo, cwd, prompt, resume = 
 
   let proc
   try {
-    proc = spawn(tool.bin, tool.args(prompt, { permissionMode, resume }), {
+    proc = spawn(tool.bin, tool.args(prompt, { permissionMode, resume, allowedTools }), {
       cwd, stdio: ['ignore', 'pipe', 'pipe'], env: agentEnv(), shell: process.platform === 'win32',
     })
   } catch (err) {

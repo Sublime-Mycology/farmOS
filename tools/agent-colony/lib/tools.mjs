@@ -71,9 +71,11 @@ const claudeCode = {
   bin: CLAUDE_BIN,
   watches: true,
   permissionModes: ['acceptEdits', 'plan', 'default', 'bypassPermissions'],
-  args(prompt, { permissionMode, resume }) {
+  args(prompt, { permissionMode, resume, allowedTools = [] }) {
     const a = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', permissionMode]
     if (resume) a.push('--resume', resume)
+    // Commands you allowed for this repo in the colony (headless runs can't ask).
+    if (allowedTools.length) a.push('--allowedTools', allowedTools.join(','))
     return a
   },
   canResume: true,

@@ -31,6 +31,12 @@ npm start            # http://127.0.0.1:5274/
 Needs Node 20+ and git. To launch agents you also need at least one agent CLI on your `PATH`
 (see [Tools](#tools)).
 
+## Adding a repo
+
+A plot appears for every repo that has Claude Code sessions. To add one that doesn't have any yet
+(a brand-new project, say), type its folder into the box under **All repos**, e.g.
+`~/code/clip-factory`. It stays on the map until you remove it from `data/colony.json` (`pinned`).
+
 ## Running several agents at once
 
 1. Click a plot, or a repo in the right-hand panel.

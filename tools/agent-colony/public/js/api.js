@@ -19,6 +19,9 @@ export const api = {
   archive: (id) => request('POST', `/api/threads/${id}/archive`),
   viewed: (id) => request('POST', `/api/threads/${id}/viewed`),
   reply: (id, prompt, permissionMode) => request('POST', `/api/threads/${id}/reply`, { prompt, permissionMode }),
+  addRepo: (path) => request('POST', '/api/repos/add', { path }),
+  unpinRepo: (path) => request('POST', '/api/repos/unpin', { path }),
+  allowTools: (repo, tools) => request('POST', '/api/repos/allow', { repo, tools }),
   reveal: (repo) => request('POST', '/api/repos/reveal', { repo }),
   clearArchive: () => request('POST', '/api/archive/clear'),
 }

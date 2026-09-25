@@ -116,7 +116,21 @@ export class Hud {
     if (view !== this.view) {
       this.view = view
       this.composerOpen = false
-      this.body.innerHTML = view === 'all' ? '<div data-part="banner"></div><div class="section-title">All repos</div><ul class="list" data-part="list"></ul>' : this.repoShell(view)
+      this.body.innerHTML = view === 'all'
+        ? `<div data-part="banner"></div><div class="section-title">All repos</div><ul class="list" data-part="list"></ul>
+           <form class="add-repo" data-part="add"><input placeholder="Add a repo folder, e.g. ~/code/clip-factory" spellcheck="false"><button class="btn small">Add</button></form>`
+        : this.repoShell(view)
+      this.body.querySelector('[data-part="add"]')?.addEventListener('submit', async (e) => {
+        e.preventDefault()
+        const input = e.target.querySelector('input')
+        if (!input.value.trim()) return input.focus()
+        try {
+          const r = await api.addRepo(input.value.trim())
+          input.value = ''
+          this.toast(`Added ${esc(r.path)}. A new plot is being laid out.`)
+          this.app.refreshSoon()
+        } catch (err) { this.toast(esc(err.message)) }
+      })
       this.wireRepo()
     }
     this.renderList()
@@ -147,6 +161,7 @@ export class Hud {
         <button class="btn small" data-act="reveal">${ICON.folder} Finder</button>
         <button class="btn small" data-act="copy">${ICON.copy} Copy path</button>
       </div>
+      <div data-part="perms"></div>
       <div class="section-title" data-part="count"></div>
       <ul class="list" data-part="list"></ul>`
   }
@@ -240,11 +255,33 @@ export class Hud {
     const repo = this.state.repos.find((r) => r.key === this.view)
     if (!repo) return
     this.body.querySelector('[data-part="count"]').textContent = `${repo.threads.length} thread${repo.threads.length === 1 ? '' : 's'}`
+    this.renderPerms(repo)
     list.innerHTML = repo.threads.map((t) => `
       <li data-thread="${esc(t.id)}" class="${this.app.selection.thread === t.id ? 'sel' : ''}" title="${esc(t.title)}">
         <span class="dot ${t.status}"></span><span class="title">${esc(t.title)}</span><span class="when">${ago(t.updatedAt)}</span>
       </li>`).join('')
     list.querySelectorAll('li[data-thread]').forEach((li) => li.addEventListener('click', () => this.app.selectThread(li.dataset.thread)))
+  }
+
+  /** Commands agents launched here may run without asking. Suggested by the repo, granted by you. */
+  renderPerms(repo) {
+    const el = this.body.querySelector('[data-part="perms"]')
+    const sig = JSON.stringify([repo.allowedTools, repo.suggestedTools])
+    if (!el || el.dataset.sig === sig) return
+    el.dataset.sig = sig
+    const code = (xs) => xs.map((x) => `<code>${esc(x)}</code>`).join(' ')
+    el.innerHTML = `
+      ${repo.suggestedTools.length ? `<div class="banner">This repo asks to let its agents run ${code(repo.suggestedTools)} without asking.
+        <div class="btn-row" style="grid-template-columns:auto;justify-content:start"><button class="btn small" data-act="allow">Allow for agents launched here</button></div></div>` : ''}
+      ${repo.allowedTools.length ? `<div class="allowed">Agents here may run ${code(repo.allowedTools)} <button class="back" data-act="revoke">Revoke</button></div>` : ''}`
+    el.querySelector('[data-act="allow"]')?.addEventListener('click', async () => {
+      await api.allowTools(repo.key, [...repo.allowedTools, ...repo.suggestedTools]).catch((e) => this.toast(esc(e.message)))
+      this.app.refreshSoon()
+    })
+    el.querySelector('[data-act="revoke"]')?.addEventListener('click', async () => {
+      await api.allowTools(repo.key, []).catch((e) => this.toast(esc(e.message)))
+      this.app.refreshSoon()
+    })
   }
 
   // ------------------------------------------------------------------------------------------
