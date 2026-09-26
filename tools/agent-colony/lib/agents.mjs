@@ -67,9 +67,13 @@ export function startTask({ toolId = 'claude-code', repo, cwd, prompt, resume = 
 
   let proc
   try {
-    proc = spawn(tool.bin, tool.args(prompt, { permissionMode, resume, allowedTools }), {
-      cwd, stdio: ['ignore', 'pipe', 'pipe'], env: agentEnv(), shell: process.platform === 'win32',
-    })
+    // Tools that read the task from stdin get it there: no quoting, any length, any characters.
+    const args = tool.args(prompt, { permissionMode, resume, allowedTools })
+    proc = spawnTool(tool.bin, args, { cwd, stdio: [tool.promptOnStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: agentEnv() })
+    if (tool.promptOnStdin) {
+      proc.stdin.on('error', () => {})
+      proc.stdin.end(prompt)
+    }
   } catch (err) {
     task.status = 'error'
     task.activity = `Could not start ${tool.bin}: ${err.message}`
@@ -108,6 +112,20 @@ export function startTask({ toolId = 'claude-code', repo, cwd, prompt, resume = 
     task.updatedAt = Date.now()
   })
   return task
+}
+
+/**
+ * Windows can only start npm-installed CLIs (claude.cmd, codex.cmd) through cmd.exe, and Node
+ * hands cmd.exe the arguments unquoted. Quote them ourselves, the way cmd.exe expects.
+ */
+export function winQuote(arg) {
+  const s = String(arg).replace(/\r?\n/g, ' ')
+  return /^[\w\-.:/\\=@,]+$/.test(s) ? s : `"${s.replace(/"/g, '""')}"`
+}
+
+function spawnTool(bin, args, opts) {
+  if (process.platform !== 'win32') return spawn(bin, args, opts)
+  return spawn(winQuote(bin), args.map(winQuote), { ...opts, shell: true, windowsHide: true })
 }
 
 export function stopTask(id) {
@@ -168,7 +186,8 @@ export async function openTerminal(cwd, command) {
     return trySpawn('osascript', ['-e', script])
   }
   if (process.platform === 'win32') {
-    return trySpawn('cmd.exe', ['/c', 'start', '""', 'cmd.exe', '/k', `cd /d "${cwd}" && ${command}`], { shell: false })
+    // start "title" /D "folder" cmd.exe /k <command>, passed to cmd.exe exactly as written.
+    return trySpawn('cmd.exe', ['/d', '/c', `start "Agent Colony" /D "${cwd}" cmd.exe /k ${command}`], { windowsVerbatimArguments: true })
   }
   const inner = `cd ${shq(cwd)} && ${command}; exec bash`
   const candidates = [
@@ -189,10 +208,11 @@ export async function openTerminal(cwd, command) {
 
 export function openUrl(url) {
   if (process.platform === 'darwin') return trySpawn('open', [url])
-  if (process.platform === 'win32') return trySpawn('cmd.exe', ['/c', 'start', '""', url])
+  if (process.platform === 'win32') return trySpawn('cmd.exe', ['/d', '/c', `start "" "${url}"`], { windowsVerbatimArguments: true })
   return trySpawn('xdg-open', [url])
 }
 
 export function revealFolder(dir) {
+  if (process.platform === 'win32') return trySpawn('explorer.exe', [path.resolve(dir)])
   return openUrl(path.resolve(dir))
 }
