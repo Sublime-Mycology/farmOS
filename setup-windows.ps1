@@ -4,6 +4,10 @@
 #
 #   irm https://raw.githubusercontent.com/Sublime-Mycology/farmOS/clip-factory/setup-windows.ps1 | iex
 #
+# Or double-click "Install Agent Colony.cmd", which runs the same thing.
+# Set COLONY_SETUP_QUIET=1 to skip the questions (for running it from an agent).
+# Everything it prints is also saved to %USERPROFILE%\ClipFactory\setup-log.txt.
+#
 # It installs Git, Node.js, Python and Claude Code if they're missing, downloads Agent Colony and
 # Clip Factory into %USERPROFILE%\code, adds Clip Factory to the colony (allowed to run its clipper),
 # helps you make your first channel, puts an "Agent Colony" shortcut on your desktop, and starts it.
@@ -22,6 +26,13 @@ $Colony    = Join-Path $ColonySrc 'tools\agent-colony'
 $Clip      = Join-Path $Code 'clip-factory'
 $Media     = Join-Path $HOME 'ClipFactory'
 $VenvPy    = Join-Path $Media '.venv\Scripts\python.exe'
+$Quiet     = [bool]$env:COLONY_SETUP_QUIET
+
+# GitHub needs TLS 1.2, which older Windows PowerShell doesn't turn on by itself.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+New-Item -ItemType Directory -Force -Path $Media | Out-Null
+try { Start-Transcript -Path (Join-Path $Media 'setup-log.txt') -Force | Out-Null } catch { }
+try {
 
 function Step([string]$Msg) { Write-Host ''; Write-Host "==> $Msg" -ForegroundColor Green }
 function Note([string]$Msg) { Write-Host "    $Msg" -ForegroundColor DarkGray }
@@ -103,7 +114,9 @@ Run 'node' (Join-Path $Colony 'scripts\add-repo.mjs') $Clip --allow
 
 # 4. First channel ------------------------------------------------------------------------------
 $channels = @(Get-ChildItem -Path (Join-Path $Media 'channels') -Filter '*.json' -ErrorAction SilentlyContinue)
-if ($channels.Count -eq 0) {
+if ($channels.Count -eq 0 -and $Quiet) {
+  Note 'No channels yet. Make one with: clipper new-channel (or ask an agent on the clip-factory plot).'
+} elseif ($channels.Count -eq 0) {
   Step 'Your first channel: a few quick questions (press Enter to accept a [default])'
   & $VenvPy (Join-Path $Clip 'clipper.py') new-channel
 } else {
@@ -116,7 +129,9 @@ $signedIn = [bool]$env:ANTHROPIC_API_KEY
 if (-not $signedIn -and (Test-Path $claudeJson)) {
   $signedIn = [bool](Select-String -Path $claudeJson -Pattern '"oauthAccount"' -Quiet)
 }
-if (-not $signedIn) {
+if (-not $signedIn -and $Quiet) {
+  Note 'Claude Code is not signed in yet: run claude in a terminal once and sign in.'
+} elseif (-not $signedIn) {
   Step 'Sign in to Claude Code (agents run as you)'
   Note 'Claude Code opens here. Follow its sign-in steps, then type /exit and press Enter to finish setup.'
   & claude.cmd
@@ -149,4 +164,7 @@ Write-Host '      Make shorts and one long clip from https://youtu.be/VIDEO_ID f
 Write-Host '  * To add a creator who said yes: tell any agent there, e.g.'
 Write-Host '      Add @CreatorHandle to YOUR-CHANNEL, they allowed clipping via their clip program'
 Write-Host "  * Finished clips to review: $Media\review"
+} finally {
+  try { Stop-Transcript | Out-Null } catch { }
+}
 }
