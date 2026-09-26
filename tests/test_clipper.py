@@ -108,3 +108,41 @@ class CreatorRights(unittest.TestCase):
         clipper.check_rights(ch, "A", "@a", False, license_="Creative Commons Attribution license (reuse allowed)")
         with self.assertRaises(SystemExit):
             clipper.check_rights(ch, "A", "@a", False, license_="")
+
+
+class ChannelCommands(unittest.TestCase):
+    def setUp(self):
+        import argparse
+        self.ns = argparse.Namespace
+        self.tmp = Path(tempfile.mkdtemp())
+        self.saved = clipper.CHANNELS_DIR
+        clipper.CHANNELS_DIR = self.tmp
+
+    def tearDown(self):
+        clipper.CHANNELS_DIR = self.saved
+
+    def test_new_channel_then_add_creator(self):
+        clipper.cmd_new_channel(self.ns(name="Pod Clips", title="Pod Clips", niche="podcasts", rights="permission",
+                                        creator=["host"], permission=["clip program"], accent=None, force=False))
+        clipper.cmd_add_creator(self.ns(channel="pod-clips", handle="@Guest", permission="email", name=None))
+        clipper.cmd_add_creator(self.ns(channel="pod-clips", handle="Host", permission="written OK", name=None))
+        ch = clipper.load_channel("pod-clips")
+        self.assertEqual(ch["title"], "Pod Clips")
+        self.assertEqual([(c["handle"], c["permission"]) for c in ch["allowedCreators"]],
+                         [("@Guest", "email"), ("@Host", "written OK")])
+        self.assertIn("long", ch["formats"])  # copied from the template
+        with self.assertRaises(SystemExit):  # no silent overwrite
+            clipper.cmd_new_channel(self.ns(name="pod-clips", title=None, niche=None, rights="own",
+                                            creator=[], permission=[], accent=None, force=False))
+
+    def test_template_is_visible_but_yours_win(self):
+        self.assertIn("example", clipper.channel_files())
+        (self.tmp / "example.json").write_text(json.dumps({"title": "mine", "rights": "own"}), encoding="utf-8")
+        self.assertEqual(clipper.load_channel("example")["title"], "mine")
+
+
+class Fonts(unittest.TestCase):
+    def test_custom_font_file_wins(self):
+        with tempfile.NamedTemporaryFile(suffix=".ttf", delete=False) as f:
+            pass
+        self.assertEqual(clipper.pick_font({"font": "Mine", "fontFile": f.name}), ("Mine", f.name))

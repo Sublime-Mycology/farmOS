@@ -10,22 +10,42 @@ Typical tasks:
 - *"Make shorts and one long clip from https://youtu.be/… for example"*
 - *"Long clip only, the part about X, from https://youtu.be/… for example"*
 
+Always run the tool as `./clipper …` from the repo folder. It picks the right Python on every
+system, and it's the command you're allowed to run without asking.
+
+## Setting up channels
+
+When the user asks for a channel or says they got permission from a creator, record it:
+
+```
+./clipper new-channel --name podcast-clips --title "Podcast Clips" \
+  --niche "Best moments from long-form podcasts, for people who don't have 3 hours" \
+  --creator @SomeHost --permission "Clip program, joined 2026-09-26"
+./clipper add-creator podcast-clips @AnotherHost --permission "Emailed OK on 2026-09-25"
+```
+
+- Only add a creator when the user says they have permission, and put the user's own words about
+  how and when into `--permission`.
+- Channels are saved in `~/ClipFactory/channels/` (private, not in git), so don't commit them.
+- To change a channel's style or limits, edit its JSON file there. `channels/example.json` in the
+  repo shows every field.
+
 ## Steps
 
-1. **Read the channel.** `cat channels/<channel>.json`. Your brief is `niche`, `lookFor`, `avoid`,
+1. **Read the channel.** `./clipper channels`, then read `~/ClipFactory/channels/<channel>.json`. Your brief is `niche`, `lookFor`, `avoid`,
    and for each format in `formats`: `perVideo`, `minSeconds`, `maxSeconds`.
-2. **Get the video.** `python3 clipper.py fetch <url> --channel <channel>` prints the video id.
+2. **Get the video.** `./clipper fetch <url> --channel <channel>` prints the video id.
    **If it refuses because of rights, stop and report it.** Most videos we clip belong to other
    creators, and the channel config lists the ones who gave permission. Never pass
    `--i-have-rights` unless the task explicitly says the user has permission for that creator.
-3. **Read the whole transcript**, not just the start: `python3 clipper.py transcript <id>` (in parts
+3. **Read the whole transcript**, not just the start: `./clipper transcript <id>` (in parts
    with `--from/--to` for long videos). Lines show `[m:ss 83.4s]`, and you pass the seconds to `cut`.
    Make notes of candidate moments as you go.
 4. **Choose**, then **cut** each clip (see the two formats below). Fewer great clips beat
    filling the quota. If the video has nothing worth clipping, say so.
 5. **Report back**: for each clip, its id, format, title, time range and why. Also note what you
    skipped and why, and any transcript problems (see Rules). Point to the review page
-   `~/ClipFactory/review/<channel>/index.html` (`python3 clipper.py queue --channel <channel>`).
+   `~/ClipFactory/review/<channel>/index.html` (`./clipper queue --channel <channel>`).
 
 ## Shorts (`--format short`)
 
@@ -36,7 +56,7 @@ Typical tasks:
 - Title: at most 60 characters, specific, curiosity without lying.
 
 ```
-python3 clipper.py cut <id> --channel <ch> --format short --start 83.2 --end 121.9 \
+./clipper cut <id> --channel <ch> --format short --start 83.2 --end 121.9 \
   --title "Why your mushrooms stall after pinning" --hook "Pins stalled?" \
   --description "One sentence on what the viewer gets." --tags "mushrooms,growing" \
   --why "Clear problem → fix in 35s"
@@ -60,7 +80,7 @@ from its natural start to its natural end. It is not a highlight reel.
   sentences summarising the segment (the credit is added automatically).
 
 ```
-python3 clipper.py cut <id> --channel <ch> --format long --start 612 --end 1508 \
+./clipper cut <id> --channel <ch> --format long --start 612 --end 1508 \
   --title "The contamination problem that nearly ended our farm" \
   --description "..." --chapters "0:00 The problem; 4:12 What we tried; 11:30 The fix" \
   --thumb 1030 --why "Full story arc, strong ending"

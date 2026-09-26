@@ -4,7 +4,9 @@ clipper: the mechanical half of Clip Factory. An agent (or you) decides *what* t
 this does the downloading, cutting, reframing, captioning and bookkeeping.
 
     clipper doctor                                   check ffmpeg / yt-dlp / folders
-    clipper channels                                 list channel configs
+    clipper channels                                 list your channels
+    clipper new-channel [--name N --title T --niche "..." --creator @h --permission "..."]
+    clipper add-creator CHANNEL @handle --permission "how and when they said yes"
     clipper fetch URL --channel NAME                 download a video + timed transcript
     clipper import FILE --channel NAME [--subs F]    use a local video (your own footage)
     clipper transcript VIDEO_ID [--from S] [--to S]  print the transcript with timestamps
@@ -12,8 +14,9 @@ this does the downloading, cutting, reframing, captioning and bookkeeping.
     clipper queue [--channel NAME] [--status pending]
     clipper approve CLIP_ID / clipper reject CLIP_ID [--reason "..."]
 
-Times accept seconds (83.5) or mm:ss / hh:mm:ss. Media lives under $CLIP_FACTORY_HOME
-(default ~/ClipFactory), outside git, so every agent's worktree shares it.
+Times accept seconds (83.5) or mm:ss / hh:mm:ss. Your channels, downloads and clips live under
+$CLIP_FACTORY_HOME (default ~/ClipFactory), outside git: private, and shared by every agent's
+worktree. The repo's channels/ folder only holds the template.
 """
 
 from __future__ import annotations
@@ -31,8 +34,9 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-CHANNELS_DIR = ROOT / "channels"
+TEMPLATES = ROOT / "channels"
 HOME = Path(os.environ.get("CLIP_FACTORY_HOME", Path.home() / "ClipFactory")).expanduser()
+CHANNELS_DIR = HOME / "channels"
 VIDEOS = HOME / "videos"
 REVIEW = HOME / "review"
 
@@ -89,12 +93,19 @@ def slugify(text: str, n: int = 48) -> str:
     return (s[:n].rstrip("-") or "clip")
 
 
+def channel_files() -> dict[str, Path]:
+    """Your channels (~/ClipFactory/channels), plus the repo's templates where names don't clash."""
+    found = {p.stem: p for p in sorted(TEMPLATES.glob("*.json"))}
+    found.update({p.stem: p for p in sorted(CHANNELS_DIR.glob("*.json"))})
+    return found
+
+
 def load_channel(name: str) -> dict:
-    path = CHANNELS_DIR / f"{name}.json"
-    if not path.exists():
-        known = ", ".join(sorted(p.stem for p in CHANNELS_DIR.glob("*.json"))) or "none yet"
-        die(f"no channel '{name}' (channels/{name}.json). Known: {known}")
-    ch = json.loads(path.read_text())
+    path = channel_files().get(name)
+    if not path:
+        mine = ", ".join(sorted(p.stem for p in CHANNELS_DIR.glob("*.json"))) or "none yet"
+        die(f"no channel '{name}'. Your channels: {mine}. Make one with: clipper new-channel")
+    ch = json.loads(path.read_text(encoding="utf-8"))
     ch.setdefault("name", name)
     ch.setdefault("style", {})
     return ch
@@ -130,13 +141,13 @@ def video_dir(video_id: str) -> Path:
 
 
 def read_json(p: Path):
-    return json.loads(p.read_text())
+    return json.loads(p.read_text(encoding="utf-8"))
 
 
 def write_json(p: Path, data):
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(p)
 
 
@@ -251,15 +262,24 @@ def cmd_doctor(_):
         print("yt-dlp      missing (needed for `fetch`; `import` works without it): pip install yt-dlp")
     print(f"media home  {HOME}")
     chans = sorted(p.stem for p in CHANNELS_DIR.glob("*.json"))
-    print(f"channels    {', '.join(chans) or 'none — copy channels/example.json'}")
+    print(f"channels    {', '.join(chans) or 'none yet: clipper new-channel'}  ({CHANNELS_DIR})")
+    family, font = pick_font({})
+    print(f"font        {family} ({font or 'not found: captions use libass default'})")
     sys.exit(0 if ok else 1)
 
 
 def cmd_channels(_):
-    for p in sorted(CHANNELS_DIR.glob("*.json")):
+    files = channel_files()
+    if not any(p.parent == CHANNELS_DIR for p in files.values()):
+        print("You have no channels yet. Make one with: clipper new-channel")
+    for name, p in files.items():
         ch = read_json(p)
+        if p.parent == TEMPLATES:
+            print(f"{name:20} (template: copy it with `clipper new-channel`)")
+            continue
         fmts = ", ".join(f"{k} {v.get('minSeconds', '?')}-{v.get('maxSeconds', '?')}s" for k, v in formats(ch).items())
-        print(f"{p.stem:20} {ch.get('title', ''):28} rights={ch.get('rights', '?'):10} {fmts}")
+        who = ", ".join(c.get("handle", "?") for c in creator_entries(ch)) or "-"
+        print(f"{name:20} {ch.get('title', ''):28} rights={ch.get('rights', '?'):10} {fmts}  creators: {who}")
 
 
 def creator_entries(ch: dict) -> list[dict]:
@@ -297,6 +317,80 @@ def check_rights(ch: dict, uploader: str, uploader_id: str, override: bool, chan
     if rights == "own" and creator_entries(ch) and not creator:
         die(f"'{uploader}' is not one of this channel's own accounts (allowedCreators).")
     return creator or {"handle": uploader_id or uploader}
+
+
+def ask(prompt: str, default: str = "") -> str:
+    try:
+        v = input(f"{prompt}{f' [{default}]' if default else ''}: ").strip()
+    except EOFError:
+        v = ""
+    return v or default
+
+
+def cmd_new_channel(a):
+    interactive = sys.stdin.isatty() and not a.name
+    if interactive:
+        print("New channel. Press Enter to accept the [default].")
+        a.title = ask("Channel name as viewers see it", a.title or "My Clips")
+        a.name = slugify(ask("Short id for commands", slugify(a.title, 24)), 24)
+        a.niche = ask("What is it about, and who watches it", a.niche or "")
+        kind = ask("Whose videos? 1 = other creators who gave permission, 2 = your own", "1")
+        a.rights = "own" if kind.strip() == "2" else "permission"
+        if a.rights == "permission":
+            print("Creators you have permission from, one at a time. Leave the handle empty to finish.")
+            while True:
+                h = ask("  YouTube handle (e.g. @SomeCreator)")
+                if not h:
+                    break
+                a.creator.append(h)
+                a.permission.append(ask("  How and when did they say yes", f"Permission noted {dt.date.today()}"))
+    if not a.name:
+        die("--name is required")
+    name = slugify(a.name, 24)
+    path = CHANNELS_DIR / f"{name}.json"
+    if path.exists() and not a.force:
+        die(f"channel '{name}' already exists ({path}). Use add-creator, or --force to replace it.")
+    ch = read_json(TEMPLATES / "example.json")
+    for k in ("about", "allowedCreators"):
+        ch.pop(k, None)
+    ch["title"] = a.title or name
+    ch["rights"] = a.rights
+    if a.niche:
+        ch["niche"] = a.niche
+    if a.accent:
+        ch.setdefault("style", {})["accent"] = a.accent
+    ch["allowedCreators"] = []
+    for i, h in enumerate(a.creator):
+        note = a.permission[i] if i < len(a.permission) else (a.permission[-1] if a.permission else "")
+        ch["allowedCreators"].append(creator_entry(h, note))
+    write_json(path, {"title": ch.pop("title"), **ch})
+    print(f"created {name}  ({path})")
+    if a.rights == "permission" and not ch["allowedCreators"]:
+        print(f"next: clipper add-creator {name} @handle --permission \"how they said yes\"")
+
+
+def creator_entry(handle: str, permission: str, name: str = "") -> dict:
+    handle = handle.strip()
+    if handle and not handle.startswith("@") and not handle.startswith("UC"):
+        handle = "@" + handle
+    entry = {"handle": handle, "permission": permission or f"Permission noted {dt.date.today()}"}
+    if name:
+        entry["name"] = name
+    return entry
+
+
+def cmd_add_creator(a):
+    path = CHANNELS_DIR / f"{a.channel}.json"
+    if not path.exists():
+        die(f"no channel '{a.channel}' in {CHANNELS_DIR}. Make it with: clipper new-channel")
+    ch = read_json(path)
+    entry = creator_entry(a.handle, a.permission, a.name or "")
+    creators = [c for c in creator_entries(ch)
+                if str(c.get("handle", "")).lower().lstrip("@") != entry["handle"].lower().lstrip("@")]
+    creators.append(entry)
+    ch["allowedCreators"] = creators
+    write_json(path, ch)
+    print(f"{a.channel}: may clip {entry['handle']} ({entry['permission']})")
 
 
 def cmd_fetch(a):
@@ -421,6 +515,29 @@ def source_file(d: Path) -> Path:
     die(f"no video file in {d}")
 
 
+WINDIR = os.environ.get("WINDIR", "C:/Windows")
+FONTS = [  # (family, candidate files): a bold face that exists on each system
+    ("Arial", [f"{WINDIR}/Fonts/arialbd.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+               "/Library/Fonts/Arial Bold.ttf"]),
+    ("DejaVu Sans", ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+                     "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"]),
+    ("Liberation Sans", ["/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"]),
+]
+
+
+def pick_font(style: dict) -> tuple[str, str | None]:
+    """The caption font. It is copied next to the subtitles so libass finds it on every system."""
+    if style.get("fontFile") and Path(style["fontFile"]).expanduser().exists():
+        return style.get("font", "Custom"), str(Path(style["fontFile"]).expanduser())
+    wanted = style.get("font")
+    ordered = sorted(FONTS, key=lambda f: f[0] != wanted)
+    for family, files in ordered:
+        for f in files:
+            if Path(f).exists():
+                return family, f
+    return wanted or "Arial", None
+
+
 def ass_color(hex_color: str) -> str:
     h = hex_color.lstrip("#")
     r, g, b = h[0:2], h[2:4], h[4:6]
@@ -428,7 +545,7 @@ def ass_color(hex_color: str) -> str:
 
 
 def build_ass(words: list[dict], start: float, end: float, hook: str, style: dict, w: int, h: int) -> str:
-    font = style.get("font", "DejaVu Sans")
+    font = style.get("font", "Arial")
     size = int(style.get("captionSize", 84 if h > w else 60))
     accent = ass_color(style.get("accent", "#FFD400"))
     per = int(style.get("wordsPerCaption", 3))
@@ -548,8 +665,14 @@ def cmd_cut(a):
     with tempfile.TemporaryDirectory() as tmp:
         vf = video_filter(layout, w, h)
         if has_ass and (a.hook or (style.get("captions", True) and style.get("captionMode") != "off")):
+            family, font_file = pick_font(style)
+            style["font"] = family
+            fonts_opt = ""
+            if font_file:
+                shutil.copy(font_file, Path(tmp, "font" + Path(font_file).suffix))
+                fonts_opt = ":fontsdir=."
             Path(tmp, "subs.ass").write_text(build_ass(words, start, end, a.hook or "", style, w, h), encoding="utf-8")
-            vf += ";[v0]ass=subs.ass[v]"
+            vf += f";[v0]ass=subs.ass{fonts_opt}[v]"
         else:
             vf += ";[v0]null[v]"
         cmd = [
@@ -669,12 +792,53 @@ pre{{white-space:pre-wrap;font-size:12px}} code{{font-size:11px;color:#b7c4ad}} 
 
 # ---------------------------------------------------------------------------------------------
 
+def use_own_python():
+    """Re-run under Clip Factory's own Python (made by the installer, has yt-dlp) if it exists."""
+    venv = HOME / ".venv"
+    if os.environ.get("CLIPPER_REEXEC") or not venv.exists():
+        return
+    try:
+        if Path(sys.prefix).resolve() == venv.resolve():
+            return
+    except OSError:
+        return
+    for rel in ("Scripts/python.exe", "bin/python"):
+        py = venv / rel
+        if py.exists():
+            env = {**os.environ, "CLIPPER_REEXEC": "1"}
+            sys.exit(subprocess.call([str(py), str(Path(__file__).resolve()), *sys.argv[1:]], env=env))
+
+
 def main():
+    use_own_python()
+    for stream in (sys.stdout, sys.stderr):  # Windows consoles default to cp1252; titles have emoji
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     p = argparse.ArgumentParser(prog="clipper", description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     sub.add_parser("channels").set_defaults(fn=cmd_channels)
+
+    n = sub.add_parser("new-channel", help="create a channel (asks questions when run with no options)")
+    n.add_argument("--name", help="short id used in commands, e.g. my-clips")
+    n.add_argument("--title", help="channel name as viewers see it")
+    n.add_argument("--niche", help="what the channel is about and who watches it")
+    n.add_argument("--rights", choices=list(RIGHTS), default="permission")
+    n.add_argument("--creator", action="append", default=[], help="@handle of a creator who allows clipping (repeatable)")
+    n.add_argument("--permission", action="append", default=[], help="how/when they said yes (one per --creator)")
+    n.add_argument("--accent", help="caption highlight colour, e.g. #FFD400")
+    n.add_argument("--force", action="store_true")
+    n.set_defaults(fn=cmd_new_channel)
+
+    ac = sub.add_parser("add-creator", help="record a creator's permission on a channel")
+    ac.add_argument("channel")
+    ac.add_argument("handle")
+    ac.add_argument("--permission", required=True, help="how and when they said yes")
+    ac.add_argument("--name")
+    ac.set_defaults(fn=cmd_add_creator)
 
     f = sub.add_parser("fetch")
     f.add_argument("url")

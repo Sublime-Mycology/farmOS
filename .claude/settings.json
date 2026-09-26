@@ -1,8 +1,10 @@
 {
   "permissions": {
     "allow": [
+      "Bash(./clipper:*)",
       "Bash(python3 clipper.py:*)",
-      "Bash(python clipper.py:*)"
+      "Bash(python clipper.py:*)",
+      "Bash(py clipper.py:*)"
     ]
   }
 }

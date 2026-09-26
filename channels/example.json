@@ -1,6 +1,6 @@
 {
   "title": "Example Clips",
-  "about": "Copy this file to channels/<your-channel>.json, one per YouTube channel you run.",
+  "about": "Template. Make your own channels with `clipper new-channel`; they are saved in ~/ClipFactory/channels, not in git.",
   "rights": "permission",
   "allowedCreators": [
     {
@@ -48,8 +48,7 @@
     }
   },
   "style": {
-    "accent": "#FFD400",
-    "font": "DejaVu Sans"
+    "accent": "#FFD400"
   },
   "credit": "🎥 Full video: {title} by {uploader}\n{url}",
   "hashtags": [],

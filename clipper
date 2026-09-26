@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Run clipper.py with Clip Factory's own Python (made by the installer), or the first Python 3.9+
+# found. Works in Git Bash on Windows, which is where Claude Code runs its commands there.
+here="$(cd "$(dirname "$0")" && pwd)"
+home="${CLIP_FACTORY_HOME:-$HOME/ClipFactory}"
+for py in "$home/.venv/Scripts/python.exe" "$home/.venv/bin/python" python3 python py; do
+  # The Microsoft Store's fake python3 fails this check, so it's skipped.
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import sys; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
+    exec "$py" "$here/clipper.py" "$@"
+  fi
+done
+echo "clipper: no Python 3.9+ found. Run the installer, or install Python from python.org." >&2
+exit 1

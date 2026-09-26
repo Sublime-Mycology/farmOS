@@ -11,17 +11,34 @@ video URL ──fetch (rights check)──▶ video + timed transcript ──age
 
 ## Setup
 
+**Windows, one step.** Paste into PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Sublime-Mycology/farmOS/clip-factory/setup-windows.ps1 | iex
+```
+
+This installs what's missing (Git, Node.js, Python, Claude Code) and downloads Agent Colony and
+Clip Factory into `%USERPROFILE%\code`. It adds Clip Factory to the colony, allowed to run its
+clipper, asks a few questions to make your first channel, and puts an **Agent Colony** shortcut
+on your desktop. You can run it again at any time to update.
+
+**By hand (any system):**
+
 ```bash
 pip install -r requirements.txt     # yt-dlp, plus a bundled ffmpeg if you don't have one
-python3 clipper.py doctor           # checks ffmpeg (with caption support), yt-dlp, folders
+./clipper doctor                    # checks ffmpeg (with caption support), yt-dlp, folders
+./clipper new-channel               # asks a few questions
 python3 -m unittest discover -s tests
 ```
 
-Clips and downloads live in `~/ClipFactory/` (set `CLIP_FACTORY_HOME` to change it), never in git.
+Your channels, downloads and clips live in `~/ClipFactory/` (set `CLIP_FACTORY_HOME` to change
+it), never in git.
 
 ## Channels
 
-One JSON file per channel in `channels/`. Start from `example.json`.
+Make channels with `./clipper new-channel`, and add creators with
+`./clipper add-creator <channel> @handle --permission "how they said yes"`, or just ask an agent to.
+Each channel is a JSON file in `~/ClipFactory/channels/`. `channels/example.json` shows every field.
 
 **Who you may clip:** `rights` and `allowedCreators`. `fetch` refuses any creator not listed.
 Keep a record of each permission:
@@ -66,18 +83,18 @@ Launch one agent per video. They run side by side, and each follows `CLAUDE.md`.
 **By hand:**
 
 ```bash
-python3 clipper.py fetch https://youtu.be/XXXX --channel example         # prints the video id
-python3 clipper.py transcript XXXX
-python3 clipper.py cut XXXX --channel example --format short --start 83.2 --end 121.9 \
+./clipper fetch https://youtu.be/XXXX --channel example         # prints the video id
+./clipper transcript XXXX
+./clipper cut XXXX --channel example --format short --start 83.2 --end 121.9 \
     --title "Why your pins stall" --hook "Pins stalled?"
-python3 clipper.py cut XXXX --channel example --format long --start 612 --end 1508 \
+./clipper cut XXXX --channel example --format long --start 612 --end 1508 \
     --title "The contamination problem that nearly ended our farm" \
     --chapters "0:00 The problem; 4:12 What we tried; 11:30 The fix" --thumb 1030
-python3 clipper.py queue                       # and open the review page it prints
-python3 clipper.py approve <clip-id>           # or: reject <clip-id> --reason "..."
+./clipper queue                       # and open the review page it prints
+./clipper approve <clip-id>           # or: reject <clip-id> --reason "..."
 ```
 
-For your own footage, skip YouTube: `python3 clipper.py import video.mp4 --channel <ch> --subs video.srt`.
+For your own footage, skip YouTube: `./clipper import video.mp4 --channel <ch> --subs video.srt`.
 Without a subtitle file, `pip install faster-whisper` transcribes it locally.
 
 Encoding a 9-minute long clip took about 2 minutes on a modest 4-core machine. Shorts take seconds.
