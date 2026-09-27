@@ -146,6 +146,7 @@ export class Hud {
         <div><h2>${esc(repo.name)}</h2><div class="path">${esc(repo.path)}</div></div>
       </div>
       <button class="btn primary" data-act="new" style="width:100%">${ICON.chat} New conversation</button>
+      ${repo.prompts?.length ? `<div class="presets">${repo.prompts.map((x, i) => `<button class="chip" data-preset="${i}" title="${esc(x.prompt)}">${esc(x.label)}</button>`).join('')}</div>` : ''}
       <div class="composer hidden" data-part="composer">
         <textarea placeholder="What should this agent work on? (Ctrl+Enter to launch)"></textarea>
         <div class="opts">
@@ -171,6 +172,19 @@ export class Hud {
     on('back', () => this.app.clear())
     on('new', () => this.openComposer())
     on('launch', () => this.launch())
+    this.body.querySelectorAll('[data-preset]').forEach((b) => b.addEventListener('click', () => {
+      const repo = this.state.repos.find((r) => r.key === this.app.selection.repo)
+      const preset = repo?.prompts?.[Number(b.dataset.preset)]
+      if (!preset) return
+      this.openComposer()
+      const ta = this.body.querySelector('[data-part="composer"] textarea')
+      ta.value = preset.prompt
+      ta.focus()
+      // Select the first CAPITALISED placeholder (e.g. PASTE-YOUTUBE-LINK) so typing or pasting replaces it.
+      const m = /[A-Z][A-Z-]{3,}[A-Z]/.exec(preset.prompt)
+      if (m) ta.setSelectionRange(m.index, m.index + m[0].length)
+      else ta.setSelectionRange(ta.value.length, ta.value.length)
+    }))
     on('reveal', async () => {
       const r = await api.reveal(this.app.selection.repo).catch((e) => ({ ok: false, error: e.message }))
       if (!r.ok) this.toast('Could not open the folder here — path copied instead.'), this.copy(this.app.selection.repo)

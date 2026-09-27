@@ -186,6 +186,7 @@ async function buildColony() {
       slots: list.map((t) => t.id),
       allowedTools: state.allowed?.[repo] || [],
       suggestedTools: DEMO ? [] : (await suggestedTools(repo)).filter((x) => !(state.allowed?.[repo] || []).includes(x)),
+      prompts: DEMO ? [] : await repoPrompts(repo),
     })
   }
   out.sort((a, b) => a.name.localeCompare(b.name))
@@ -208,6 +209,19 @@ async function suggestedTools(repo) {
   }
 }
 
+/** Ready-made prompts a repo offers in its .colony/prompts.json: [{ label, prompt }]. */
+async function repoPrompts(repo) {
+  try {
+    const list = JSON.parse(await fs.readFile(path.join(repo, '.colony', 'prompts.json'), 'utf8'))
+    return (Array.isArray(list) ? list : [])
+      .filter((x) => x && typeof x.label === 'string' && typeof x.prompt === 'string')
+      .slice(0, 12)
+      .map((x) => ({ label: x.label.slice(0, 40), prompt: x.prompt.slice(0, 2000) }))
+  } catch {
+    return []
+  }
+}
+
 let lastColony = null
 async function colony() {
   lastColony = await buildColony()
@@ -222,8 +236,14 @@ function findThread(id) {
   return null
 }
 
+// Compare folders the way the OS does: git on Windows reports C:/Users/..., Node C:\\Users\\...
+const samePath = (a, b) => {
+  const norm = (x) => (process.platform === 'win32' ? path.resolve(x).toLowerCase() : path.resolve(x))
+  return norm(a) === norm(b)
+}
 function knownRepo(p) {
-  return (lastColony?.repos || []).find((r) => r.path === p) || null
+  if (!p) return null
+  return (lastColony?.repos || []).find((r) => samePath(r.path, String(p))) || null
 }
 
 // ---------------------------------------------------------------------------------------------

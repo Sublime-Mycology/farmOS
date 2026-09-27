@@ -134,7 +134,20 @@ function summarise(records) {
       const content = r.message.content
       const isToolResult = Array.isArray(content) && content.some((c) => c && c.type === 'tool_result')
       if (!isToolResult) {
-        const text = cleanPrompt(firstText(content))
+        // A slash command is recorded as <command-name>/clip</command-name><command-args>…</command-args>,
+        // followed by its expansion. Name the thread after what the user typed, not the expansion.
+        const raw = firstText(content)
+        const cmd = /<command-name>([^<]*)<\/command-name>/.exec(raw)
+        const cmdArgs = /<command-args>([\s\S]*?)<\/command-args>/.exec(raw)
+        const text = cmd ? `${cmd[1].trim()} ${cmdArgs ? cmdArgs[1].trim() : ''}`.trim() : cleanPrompt(raw)
+        if (cmd) meta.commandSeen = true
+        else if (meta.commandSeen && meta.firstPrompt) {
+          meta.commandSeen = false
+          meta.turnEnded = false
+          meta.errored = false
+          meta.lastRole = 'user'
+          continue // the expansion of the command just shown
+        }
         if (text && !meta.firstPrompt) meta.firstPrompt = text
         if (text && !r.isMeta) meta.activity = `You: ${clip(text, 90)}`
       }
