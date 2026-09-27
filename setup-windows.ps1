@@ -45,14 +45,49 @@ function Run([string]$Exe) {
   & $Exe @args
   if ($LASTEXITCODE -ne 0) { throw "This step failed: $Exe $($args -join ' ') (exit code $LASTEXITCODE)" }
 }
+function Winget-Install([string]$Id, [string]$Name) {
+  Step "Installing $Name (click Yes if Windows asks for permission)"
+  winget install --exact --id $Id --silent --accept-source-agreements --accept-package-agreements
+  $code = $LASTEXITCODE
+  Refresh-Path
+  # -1978335189 = "already installed"; anything else non-zero is a real failure.
+  if ($code -ne 0 -and $code -ne -1978335189) {
+    throw "Installing $Name didn't finish (winget exit code $code). If Windows asked for permission, click Yes next time. Then paste the same line again."
+  }
+}
 function Ensure([string]$Cmd, [string]$Id, [string]$Name) {
   if (Have $Cmd) { Note "${Name}: already installed"; return }
-  Step "Installing $Name"
-  winget install --exact --id $Id --silent --accept-source-agreements --accept-package-agreements
-  Refresh-Path
+  Winget-Install $Id $Name
   if (-not (Have $Cmd)) {
-    throw "$Name was installed but Windows hasn't picked it up yet. Close PowerShell, open a new one, and paste the same line again."
+    throw "$Name was installed but this window can't see it yet. Close this window, then paste the same line again (it continues where it stopped)."
   }
+}
+# A working Python 3.9+, as @(exe, args...). Checks py, python and the usual install folders, and
+# skips the Microsoft Store's fake python.exe. Never throws: the Store stub writes errors.
+function Find-Python {
+  $candidates = @()
+  if (Have 'py') { $candidates += ,@('py', '-3') }
+  if (Have 'python') { $candidates += ,@('python') }
+  foreach ($root in @((Join-Path $env:LOCALAPPDATA 'Programs\Python'), $env:ProgramFiles)) {
+    if ($root -and (Test-Path $root)) {
+      Get-ChildItem -Path $root -Directory -Filter 'Python3*' -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        ForEach-Object { $candidates += ,@((Join-Path $_.FullName 'python.exe')) }
+    }
+  }
+  $saved = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    foreach ($c in $candidates) {
+      $exe = $c[0]
+      $rest = @($c | Select-Object -Skip 1)
+      try {
+        $out = & $exe @rest -c 'import sys; print(1 if sys.version_info >= (3, 9) else 0)' 2>&1
+        if ($LASTEXITCODE -eq 0 -and "$out".Trim() -eq '1') { return ,$c }
+      } catch { }
+    }
+  } finally { $ErrorActionPreference = $saved }
+  return $null
 }
 
 # 1. Tools --------------------------------------------------------------------------------------
@@ -62,7 +97,16 @@ if (-not (Have 'winget')) {
 }
 Ensure 'git'  'Git.Git'            'Git'
 Ensure 'node' 'OpenJS.NodeJS.LTS'  'Node.js'
-Ensure 'py'   'Python.Python.3.12' 'Python'
+
+$Py = Find-Python
+if (-not $Py) {
+  Winget-Install 'Python.Python.3.12' 'Python'
+  $Py = Find-Python
+  if (-not $Py) {
+    throw 'Python was installed but this window cannot see it yet. Close this window, then paste the same line again.'
+  }
+}
+Note "Python: $($Py -join ' ')"
 
 $nodeMajor = [int](((& node -v) -replace '^v', '').Split('.')[0])
 if ($nodeMajor -lt 20) {
@@ -70,16 +114,10 @@ if ($nodeMajor -lt 20) {
   winget upgrade --exact --id OpenJS.NodeJS.LTS --silent --accept-source-agreements --accept-package-agreements
   Refresh-Path
 }
-& py -3 -c 'import sys; sys.exit(sys.version_info < (3, 9))'
-if ($LASTEXITCODE -ne 0) {
-  Step 'Installing a newer Python (need 3.9 or newer)'
-  winget install --exact --id Python.Python.3.12 --silent --accept-source-agreements --accept-package-agreements
-  Refresh-Path
-}
 
 if (Have 'claude') { Note 'Claude Code: already installed' } else {
   Step 'Installing Claude Code'
-  Run 'npm.cmd' install -g '@anthropic-ai/claude-code' --no-audit --no-fund --loglevel=error
+  Run 'npm.cmd' install -g '@anthropic-ai/claude-code' --no-audit --no-fund --loglevel=error --update-notifier=false
   Refresh-Path
 }
 
@@ -101,11 +139,14 @@ Sync $Clip $ClipBr @()
 # 3. Install ------------------------------------------------------------------------------------
 Step 'Installing the colony'
 Push-Location $Colony
-try { Run 'npm.cmd' install --no-audit --no-fund --loglevel=error } finally { Pop-Location }
+try { Run 'npm.cmd' install --no-audit --no-fund --loglevel=error --update-notifier=false } finally { Pop-Location }
 
 Step 'Installing the clipper (yt-dlp and a video editor), about a minute'
 New-Item -ItemType Directory -Force -Path (Join-Path $Media 'channels') | Out-Null
-if (-not (Test-Path $VenvPy)) { Run 'py' -3 -m venv (Join-Path $Media '.venv') }
+if (-not (Test-Path $VenvPy)) {
+  $pyArgs = @($Py | Select-Object -Skip 1) + @('-m', 'venv', (Join-Path $Media '.venv'))
+  Run $Py[0] @pyArgs
+}
 Run $VenvPy -m pip install --quiet --disable-pip-version-check --upgrade -r (Join-Path $Clip 'requirements.txt')
 Run $VenvPy (Join-Path $Clip 'clipper.py') doctor
 
@@ -151,6 +192,14 @@ $lines = @(
   'pause'
 )
 Set-Content -Path $launcher -Value $lines -Encoding ASCII
+# And one to update everything later: it just runs this installer again.
+$updater = Join-Path $desktop 'Update Clip Factory.cmd'
+Set-Content -Path $updater -Encoding ASCII -Value @(
+  '@echo off',
+  'title Update Agent Colony and Clip Factory',
+  'powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/Sublime-Mycology/farmOS/clip-factory/setup-windows.ps1 | iex"',
+  'pause'
+)
 
 Step 'Starting Agent Colony'
 Start-Process -FilePath $launcher
@@ -158,7 +207,7 @@ Start-Process -FilePath $launcher
 Write-Host ''
 Write-Host 'All set!' -ForegroundColor Green
 Write-Host '  * Your browser opens the colony in a few seconds (http://127.0.0.1:5274).'
-Write-Host '  * Next time, double-click "Agent Colony" on your desktop.'
+Write-Host '  * Next time, double-click "Agent Colony" on your desktop. "Update Clip Factory" gets new versions.'
 Write-Host '  * To make clips: click clip-factory in the right panel, then New conversation, and type e.g.'
 Write-Host '      Make shorts and one long clip from https://youtu.be/VIDEO_ID for YOUR-CHANNEL'
 Write-Host '  * To add a creator who said yes: tell any agent there, e.g.'
