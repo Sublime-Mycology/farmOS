@@ -19,6 +19,8 @@ this does the downloading, cutting, reframing, captioning and bookkeeping.
     clipper cut VIDEO_ID --channel NAME --format short|long --start S --end S --title "..."
     clipper queue [--channel NAME] [--status pending]
     clipper recut CLIP_ID [--start S --end S --title ...]   redo a clip with changes
+    clipper connect --channel NAME                   sign in to the YouTube channel it posts to (once)
+    clipper upload CLIP_ID... | --approved --channel NAME [--privacy private] [--at "2026-10-01 18:00" --every 24h]
     clipper approve CLIP_ID [--note "..."] / clipper reject CLIP_ID --reason "..."
 
 Times accept seconds (83.5) or mm:ss / hh:mm:ss. Your channels, downloads and clips live under
@@ -48,6 +50,8 @@ VIDEOS = HOME / "videos"
 REVIEW = HOME / "review"
 FRAMES = HOME / "frames"
 INBOX = HOME / "inbox"
+GOOGLE = HOME / "google"
+YT_SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"]
 
 RIGHTS = {
     "own": "Your own footage",
@@ -274,6 +278,17 @@ def cmd_doctor(_):
     print(f"channels    {', '.join(chans) or 'none yet: clipper new-channel'}  ({CHANNELS_DIR})")
     family, font = pick_font({})
     print(f"font        {family} ({font or 'not found: captions use libass default'})")
+    try:
+        import googleapiclient  # noqa: F401
+        yt_ok = "installed"
+    except ImportError:
+        yt_ok = "not installed (pip install -r requirements.txt)"
+    secret = (GOOGLE / "client_secret.json").exists()
+    print(f"youtube     {yt_ok}; Google sign-in file: {'yes' if secret else 'not yet'}")
+    for name in chans:
+        linked = read_json(CHANNELS_DIR / f"{name}.json").get("youtube", {}).get("title")
+        signed = token_path(name).exists()
+        print(f"  {name:18} " + (f"posts to \"{linked}\"" if linked and signed else "not connected: clipper connect --channel " + name))
     sys.exit(0 if ok else 1)
 
 
@@ -790,12 +805,13 @@ def cmd_skip(a):
 
 
 def cmd_feedback(a):
-    clips = [m for _, m in all_clips(a.channel) if m.get("status") in ("approved", "rejected", "replaced")]
+    clips = [m for _, m in all_clips(a.channel) if m.get("status") in ("approved", "uploaded", "rejected", "replaced")]
     clips.sort(key=lambda m: m.get("reviewed", m["created"]), reverse=True)
     if not clips:
         print(f"No reviewed clips for '{a.channel}' yet. Nothing to learn from so far.")
         return
     counts = {s: sum(m["status"] == s for m in clips) for s in ("approved", "rejected", "replaced")}
+    counts["approved"] += sum(m["status"] == "uploaded" for m in clips)
     print(f"# {a.channel}: {counts['approved']} approved, {counts['rejected']} rejected, {counts['replaced']} redone")
     print("# Use this to choose moments, titles and hooks more like the approved ones.")
     for m in clips[:a.limit]:
@@ -1099,6 +1115,215 @@ def cmd_recut(a):
     print(f"replaced {m['id']} with {new_id}")
 
 
+# ---------------------------------------------------------------------------------------------
+# YouTube: sign in once per channel, then upload approved clips.
+
+def client_secret_path() -> Path:
+    """The OAuth client file from Google Cloud. Picked up from Downloads if it isn't in place yet."""
+    dest = GOOGLE / "client_secret.json"
+    if dest.exists():
+        return dest
+    downloads = Path.home() / "Downloads"
+    found = sorted(downloads.glob("client_secret*.json"), key=lambda f: f.stat().st_mtime, reverse=True) \
+        if downloads.exists() else []
+    if not found:
+        die(f"No Google sign-in file yet. Download it from Google Cloud (Clients > Download JSON) into "
+            f"your Downloads folder, or save it as {dest}")
+    GOOGLE.mkdir(parents=True, exist_ok=True)
+    shutil.copy(found[0], dest)
+    print(f"using {found[0].name} from Downloads (copied to {dest})")
+    return dest
+
+
+def token_path(channel: str) -> Path:
+    return GOOGLE / "tokens" / f"{channel}.json"
+
+
+def youtube_service(channel: str, interactive: bool = False):
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from googleapiclient.discovery import build
+    except ImportError:
+        die("YouTube support isn't installed: pip install google-api-python-client google-auth-oauthlib "
+            "(re-running the installer does this)")
+    tp = token_path(channel)
+    creds = None
+    if tp.exists():
+        creds = Credentials.from_authorized_user_file(str(tp), YT_SCOPES)
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+        except Exception:
+            creds = None
+    if not creds or not creds.valid:
+        if not interactive:
+            die(f"'{channel}' isn't signed in to YouTube, or the sign-in expired. Run: clipper connect --channel {channel}")
+        flow = InstalledAppFlow.from_client_secrets_file(str(client_secret_path()), YT_SCOPES)
+        print("Your browser is opening. Sign in, pick the YouTube channel this clips channel posts to, and allow access.")
+        creds = flow.run_local_server(port=0, prompt="consent", open_browser=True,
+                                      authorization_prompt_message="If it didn't open, visit: {url}",
+                                      success_message="Connected! You can close this tab and go back to Clip Factory.")
+    tp.parent.mkdir(parents=True, exist_ok=True)
+    tp.write_text(creds.to_json(), encoding="utf-8")
+    return build("youtube", "v3", credentials=creds, cache_discovery=False)
+
+
+def cmd_connect(a):
+    ch = load_channel(a.channel)
+    path = CHANNELS_DIR / f"{ch['name']}.json"
+    if not path.exists():
+        die(f"'{ch['name']}' is a template; make your own channel first: clipper new-channel")
+    if a.fresh and token_path(ch["name"]).exists():
+        token_path(ch["name"]).unlink()
+    svc = youtube_service(ch["name"], interactive=True)
+    items = svc.channels().list(part="snippet", mine=True).execute().get("items", [])
+    if not items:
+        die("That Google account has no YouTube channel. Create one at https://www.youtube.com/create_channel "
+            "and run connect again.")
+    yt = items[0]
+    data = read_json(path)
+    data["youtube"] = {**data.get("youtube", {}), "channelId": yt["id"], "title": yt["snippet"]["title"],
+                       "connected": dt.date.today().isoformat()}
+    write_json(path, data)
+    print(f"Connected clips channel '{ch['name']}' to YouTube channel \"{yt['snippet']['title']}\" "
+          f"(https://www.youtube.com/channel/{yt['id']})")
+
+
+def clean_text(s: str) -> str:
+    return s.replace("<", "‹").replace(">", "›")  # YouTube rejects angle brackets in titles and descriptions
+
+
+def fit_tags(tags: list[str], limit: int = 480) -> list[str]:
+    """YouTube allows 500 characters of tags in total; tags with spaces count their quotes."""
+    out, used = [], 0
+    for t in tags:
+        t = clean_text(t.strip())[:100]
+        cost = len(t) + (2 if " " in t else 0) + (1 if out else 0)
+        if not t or used + cost > limit:
+            continue
+        out.append(t)
+        used += cost
+    return out
+
+
+def parse_when(text: str) -> dt.datetime:
+    """"2026-10-01 18:00" in local time -> aware UTC datetime."""
+    try:
+        when = dt.datetime.fromisoformat(text.strip().replace("T", " "))
+    except ValueError:
+        die(f"bad time {text!r}; use e.g. \"2026-10-01 18:00\" (your local time)")
+    if when.tzinfo is None:
+        when = when.astimezone()
+    return when.astimezone(dt.timezone.utc)
+
+
+def parse_every(text: str) -> dt.timedelta:
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([hd])\s*", text or "")
+    if not m:
+        die(f"bad --every {text!r}; use e.g. 24h, 12h or 1d")
+    n = float(m.group(1))
+    return dt.timedelta(hours=n) if m.group(2) == "h" else dt.timedelta(days=n)
+
+
+def video_body(m: dict, ch: dict, privacy: str, publish_at: dt.datetime | None) -> dict:
+    yt = ch.get("youtube", {})
+    status = {"privacyStatus": privacy, "selfDeclaredMadeForKids": bool(yt.get("madeForKids", False))}
+    if publish_at:
+        status["privacyStatus"] = "private"  # YouTube's rule: scheduled videos wait as private
+        status["publishAt"] = publish_at.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return {
+        "snippet": {
+            "title": clean_text(m["title"])[:100],
+            "description": clean_text(m["description"])[:5000],
+            "tags": fit_tags(m.get("tags", [])),
+            "categoryId": str(yt.get("categoryId", "22")),  # 22 = People & Blogs; 24 = Entertainment
+        },
+        "status": status,
+    }
+
+
+def upload_one(svc, path: Path, body: dict, thumb: Path | None) -> tuple[str, str]:
+    from googleapiclient.errors import HttpError
+    from googleapiclient.http import MediaFileUpload
+    import time
+    media = MediaFileUpload(str(path), mimetype="video/mp4", chunksize=8 * 1024 * 1024, resumable=True)
+    req = svc.videos().insert(part="snippet,status", body=body, media_body=media)
+    resp, tries = None, 0
+    while resp is None:
+        try:
+            status, resp = req.next_chunk()
+            if status:
+                print(f"  uploading… {int(status.progress() * 100)}%", flush=True)
+        except HttpError as err:
+            if err.resp.status in (500, 502, 503, 504) and tries < 5:
+                tries += 1
+                time.sleep(2 ** tries)
+                continue
+            raise
+    note = ""
+    if thumb and thumb.exists():
+        try:
+            svc.thumbnails().set(videoId=resp["id"], media_body=MediaFileUpload(str(thumb), mimetype="image/jpeg")).execute()
+        except HttpError:
+            note = "custom thumbnail skipped: verify the channel at https://www.youtube.com/verify to allow them"
+    return resp["id"], note
+
+
+def cmd_upload(a):
+    from googleapiclient.errors import HttpError  # noqa: F401  (fails early with a clear message if missing)
+    if a.approved:
+        if not a.channel:
+            die("--approved needs --channel")
+        todo = [(p, m) for p, m in all_clips(a.channel) if m.get("status") == "approved"]
+        todo.sort(key=lambda pm: pm[1].get("reviewed", pm[1]["created"]))
+    else:
+        if not a.clips:
+            die("say which clips: clipper upload CLIP_ID ...  or  clipper upload --approved --channel NAME")
+        todo = [find_clip(c) for c in a.clips]
+    if not todo:
+        print("Nothing to upload: no approved clips waiting.")
+        return
+    for _, m in todo:
+        if m.get("status") != "approved":
+            die(f"{m['id']} is '{m.get('status')}'. Only clips you approved can be uploaded "
+                f"(clipper approve {m['id']}).")
+    when = parse_when(a.at) if a.at else None
+    step = parse_every(a.every) if a.every else dt.timedelta(hours=24)
+    if when and when < dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=15):
+        die("--at must be at least 15 minutes from now")
+    services = {}
+    for i, (p, m) in enumerate(todo):
+        ch = load_channel(m["channel"])
+        if m["channel"] not in services:
+            services[m["channel"]] = youtube_service(m["channel"])
+        publish_at = when + step * i if when else None
+        body = video_body(m, ch, a.privacy, publish_at)
+        video = REVIEW / m["channel"] / m["file"]
+        thumb = REVIEW / m["channel"] / m["thumbnail"] if m.get("thumbnail") else None
+        print(f"{m['id']}: {m['title']}")
+        try:
+            vid, note = upload_one(services[m["channel"]], video, body, thumb)
+        except Exception as err:
+            msg = str(err)
+            if "quotaExceeded" in msg or "uploadLimitExceeded" in msg:
+                die("YouTube's daily upload allowance is used up (about 6 uploads a day per Google project). "
+                    "The rest will go tomorrow: run the same command again.")
+            die(f"upload failed: {msg[:500]}")
+        url = f"https://youtube.com/shorts/{vid}" if m.get("format") == "short" else f"https://youtu.be/{vid}"
+        m = read_json(p)
+        m["status"] = "uploaded"
+        m["youtube"] = {"id": vid, "url": url, "privacy": body["status"]["privacyStatus"],
+                        "publishAt": body["status"].get("publishAt", ""),
+                        "uploaded": dt.datetime.now().isoformat(timespec="seconds")}
+        write_json(p, m)
+        write_review_page(m["channel"])
+        when_txt = f", goes public {publish_at.astimezone():%a %d %b %H:%M}" if publish_at else ""
+        print(f"  done: {url} ({body['status']['privacyStatus']}{when_txt})" + (f"\n  note: {note}" if note else ""))
+    print("Manage them in YouTube Studio: https://studio.youtube.com")
+
+
 def set_status(clip_id: str, status: str, reason: str = "", note: str = ""):
     p, m = find_clip(clip_id)
     m["status"] = status
@@ -1127,7 +1352,11 @@ def write_review_page(channel: str):
   <p>Tags: {e(', '.join(m.get('tags', [])))}</p>
   <p>From <a href="{e(m['source']['url'])}">{e(m['source']['title'])}</a> by {e(m['source']['uploader'])}, {fmt_time(m['source']['start'])}–{fmt_time(m['source']['end'])}</p>
   <p>Permission: {e(m.get('permission') or m.get('rights', ''))}</p></details>
-  <code>python3 clipper.py approve {e(m['id'])}</code></div>
+  {f'<p>On YouTube: <a href="{e(m["youtube"]["url"])}">{e(m["youtube"]["url"])}</a> ({e(m["youtube"]["privacy"])})</p>' if m.get("youtube") else ''}
+  <div class="copy"><button data-copy="t">Copy title</button><button data-copy="d">Copy description</button>
+  <a href="{e(m['file'])}" download>Download</a></div>
+  <textarea hidden class="t">{e(m['title'])}</textarea><textarea hidden class="d">{e(m['description'])}</textarea>
+  <code>./clipper approve {e(m['id'])}</code></div>
 </article>""")
     page = f"""<!doctype html><meta charset="utf-8"><title>{html.escape(channel)} — clips to review</title>
 <style>
@@ -1138,7 +1367,15 @@ video{{width:100%;border-radius:10px;background:#000;max-height:460px}}
 .st{{font-size:11px;padding:2px 7px;border-radius:99px;background:#555}} .pending .st{{background:#b98a1b}}
 .approved .st{{background:#3f8a4a}} .rejected{{opacity:.55}} .rejected .st{{background:#8a3f3f}}
 pre{{white-space:pre-wrap;font-size:12px}} code{{font-size:11px;color:#b7c4ad}} a{{color:#9fd18b}}
-</style><h1>{html.escape(channel)} <small>({sum(m['status'] == 'pending' for m in clips)} to review)</small></h1>
+.uploaded .st{{background:#3f6f8a}} .replaced{{opacity:.45}}
+.copy{{display:flex;gap:6px;align-items:center;margin:6px 0}} .copy button{{background:#3a4633;color:#e8eee2;border:0;border-radius:8px;padding:5px 9px;cursor:pointer}}
+</style><script>
+document.addEventListener('click', (ev) => {{
+  const b = ev.target.closest('[data-copy]'); if (!b) return;
+  const text = b.closest('article').querySelector('textarea.' + b.dataset.copy).value;
+  navigator.clipboard.writeText(text).then(() => {{ b.textContent = 'Copied!'; setTimeout(() => b.textContent = b.dataset.copy === 't' ? 'Copy title' : 'Copy description', 1200) }});
+}});
+</script><h1>{html.escape(channel)} <small>({sum(m['status'] == 'pending' for m in clips)} to review)</small></h1>
 <main>{''.join(cards) or '<p>No clips yet.</p>'}</main>"""
     (REVIEW / channel / "index.html").write_text(page, encoding="utf-8")
 
@@ -1275,6 +1512,20 @@ def main():
     sh.add_argument("--count", type=int, default=12)
     sh.set_defaults(fn=cmd_sheet)
 
+    cn = sub.add_parser("connect", help="sign in to the YouTube channel a clips channel posts to")
+    cn.add_argument("--channel", required=True)
+    cn.add_argument("--fresh", action="store_true", help="forget the old sign-in first (e.g. to switch YouTube channel)")
+    cn.set_defaults(fn=cmd_connect)
+
+    up = sub.add_parser("upload", help="upload approved clips to YouTube (private by default)")
+    up.add_argument("clips", nargs="*")
+    up.add_argument("--approved", action="store_true", help="every approved clip of --channel, oldest first")
+    up.add_argument("--channel")
+    up.add_argument("--privacy", choices=["private", "unlisted", "public"], default="private")
+    up.add_argument("--at", help="schedule: first one goes public at this local time, e.g. \"2026-10-01 18:00\"")
+    up.add_argument("--every", help="with --at: space the rest out, e.g. 24h (default) or 12h")
+    up.set_defaults(fn=cmd_upload)
+
     fb = sub.add_parser("feedback", help="what the reviewer approved and rejected, and why")
     fb.add_argument("--channel", required=True)
     fb.add_argument("--limit", type=int, default=15)
@@ -1282,7 +1533,7 @@ def main():
 
     q = sub.add_parser("queue")
     q.add_argument("--channel")
-    q.add_argument("--status", choices=["pending", "approved", "rejected"])
+    q.add_argument("--status", choices=["pending", "approved", "rejected", "replaced", "uploaded"])
     q.set_defaults(fn=cmd_queue)
 
     ap = sub.add_parser("approve")

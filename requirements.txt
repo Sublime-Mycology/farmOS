@@ -1,3 +1,5 @@
 yt-dlp>=2025.1.1
 imageio-ffmpeg>=0.5  # a static ffmpeg with libass, if you do not have ffmpeg installed
+google-api-python-client>=2.100  # uploading to YouTube
+google-auth-oauthlib>=1.2        # signing in to YouTube
 # faster-whisper   # optional: transcribe videos that have no captions

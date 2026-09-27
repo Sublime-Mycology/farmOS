@@ -16,6 +16,7 @@ system, and it's the command you're allowed to run without asking.
 | "Check for new videos" / "What's new for podcast-clips?" / "Do the rounds" | **B. Inbox rounds** |
 | "Redo the clips I rejected" / "Fix clip X: start later, better hook" | **C. Redo from review** |
 | "Make a channel …" / "I got permission from @X for …" | **D. Channels and creators** |
+| "Upload the approved clips" / "Schedule them daily at 6pm" | **E. Upload** |
 
 ## A. Clip a video
 
@@ -90,9 +91,22 @@ system, and it's the command you're allowed to run without asking.
 - Channels live in `~/ClipFactory/channels/` (private, not in git). Edit that JSON to change a
   channel's style or limits; `channels/example.json` in the repo shows every field.
 
+## E. Upload (only when the user asks)
+
+1. `./clipper doctor` shows whether the channel is connected to YouTube. If it isn't, tell the user to
+   run `clipper connect --channel <ch>` themselves: it opens a browser to sign in, so it's not for you.
+2. `./clipper upload --approved --channel <ch>` uploads every clip the user approved, as **private**,
+   unless they asked otherwise:
+   - `--privacy unlisted|public` when they say so.
+   - To schedule: `--at "2026-10-01 18:00" --every 24h` (their local time). The first goes public then, the next a day later, and so on.
+3. Report each video's link. YouTube allows about 6 uploads a day per Google project, so if it stops
+   on the daily allowance, say so; the same command finishes the rest tomorrow.
+4. Until Google approves the project's audit, YouTube keeps API uploads private whatever you ask
+   for. Mention it if the user expected public videos.
+
 ## Rules
 
-- Never upload, post or schedule anything. Never approve your own clips.
+- Upload only when the user asks in this conversation, and only clips they approved. Never approve your own clips.
 - Only clip creators the channel says we have permission for. If unsure, stop and ask.
 - Every description credits the original video (automatic). Don't remove it.
 - Don't cut anything that misrepresents what someone said, and don't stitch halves of sentences into a new meaning.

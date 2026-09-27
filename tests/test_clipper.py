@@ -182,3 +182,54 @@ class Abilities(unittest.TestCase):
         self.assertEqual(clipper.creator_url({"handle": "@Host"}), "https://www.youtube.com/@Host/videos")
         self.assertEqual(clipper.creator_url({"handle": "Host"}), "https://www.youtube.com/@Host/videos")
         self.assertIn("/channel/UCabc", clipper.creator_url({"handle": "UCabc"}))
+
+
+class Upload(unittest.TestCase):
+    def test_body_schedules_as_private_and_cleans_text(self):
+        m = {"title": "Why <this> works", "description": "desc", "tags": ["a b", "c"]}
+        when = clipper.parse_when("2031-01-02 18:00")
+        body = clipper.video_body(m, {"youtube": {"categoryId": 24}}, "public", when)
+        self.assertEqual(body["status"]["privacyStatus"], "private")
+        self.assertTrue(body["status"]["publishAt"].endswith("Z"))
+        self.assertNotIn("<", body["snippet"]["title"])
+        self.assertEqual(body["snippet"]["categoryId"], "24")
+        self.assertFalse(body["status"]["selfDeclaredMadeForKids"])
+
+    def test_tags_fit_youtube_limit(self):
+        tags = clipper.fit_tags(["x" * 60] * 20)
+        self.assertLessEqual(sum(len(t) for t in tags) + len(tags), 500)
+
+    def test_every(self):
+        import datetime as dt
+        self.assertEqual(clipper.parse_every("12h"), dt.timedelta(hours=12))
+        self.assertEqual(clipper.parse_every("1d"), dt.timedelta(days=1))
+        with self.assertRaises(SystemExit):
+            clipper.parse_every("soon")
+
+    def test_only_approved_clips_upload_and_get_recorded(self):
+        import argparse
+        home = Path(tempfile.mkdtemp())
+        saved = (clipper.REVIEW, clipper.CHANNELS_DIR, clipper.youtube_service, clipper.upload_one)
+        clipper.REVIEW, clipper.CHANNELS_DIR = home / "review", home / "channels"
+        try:
+            clipper.CHANNELS_DIR.mkdir(parents=True)
+            (clipper.CHANNELS_DIR / "ch.json").write_text(json.dumps({"title": "C", "rights": "own"}), encoding="utf-8")
+            d = clipper.REVIEW / "ch"
+            d.mkdir(parents=True)
+            base = {"channel": "ch", "file": "x.mp4", "title": "T", "description": "D", "tags": [], "format": "short",
+                    "duration": 20, "layout": "fit", "source": {"url": "", "title": "", "uploader": "", "start": 0, "end": 20},
+                    "created": "2026-01-01T00:00:00"}
+            (d / "a.json").write_text(json.dumps({**base, "id": "a", "status": "approved"}), encoding="utf-8")
+            (d / "b.json").write_text(json.dumps({**base, "id": "b", "status": "pending"}), encoding="utf-8")
+            sent = []
+            clipper.youtube_service = lambda ch, interactive=False: "svc"
+            clipper.upload_one = lambda svc, path, body, thumb: (sent.append(body) or ("VID123", ""))
+            ns = dict(approved=False, channel=None, privacy="private", at=None, every=None)
+            with self.assertRaises(SystemExit):  # pending clip refused
+                clipper.cmd_upload(argparse.Namespace(clips=["b"], **ns))
+            clipper.cmd_upload(argparse.Namespace(clips=[], **{**ns, "approved": True, "channel": "ch"}))
+            m = json.loads((d / "a.json").read_text(encoding="utf-8"))
+            self.assertEqual((m["status"], m["youtube"]["url"]), ("uploaded", "https://youtube.com/shorts/VID123"))
+            self.assertEqual(len(sent), 1)
+        finally:
+            clipper.REVIEW, clipper.CHANNELS_DIR, clipper.youtube_service, clipper.upload_one = saved

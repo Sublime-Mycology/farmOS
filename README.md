@@ -113,9 +113,25 @@ Encoding a 9-minute long clip took about 2 minutes on a modest 4-core machine. S
 | `./clipper recut CLIP --hook … --reason …` | Redo a clip from review feedback |
 | `./clipper feedback --channel C` | Your approvals and rejections, which the agent reads before picking |
 | `./clipper approve CLIP --note …` / `reject CLIP --reason …` | Review. The notes teach the agent. |
+| `./clipper connect --channel C` / `upload --approved --channel C` | Post approved clips to YouTube |
 
 The workflows the agent follows (clip a video, inbox rounds, redo from review, channels) are
 spelled out in `CLAUDE.md`.
+
+## Posting to YouTube
+
+One-time setup per computer (a Google Cloud project with the YouTube API), then one sign-in per
+channel with `./clipper connect --channel C`. After that:
+
+```bash
+./clipper upload --approved --channel C                              # private, for a last look in Studio
+./clipper upload --approved --channel C --at "2026-10-01 18:00" --every 24h   # one a day, public at 6 pm
+```
+
+Only clips you approved can be uploaded. YouTube allows about 6 uploads a day per Google project.
+Until Google approves the project in its free audit (https://support.google.com/youtube/contact/yt_api_form),
+YouTube keeps API uploads private. Until then, the review page has *Copy title*, *Copy
+description* and *Download* buttons for posting by hand in YouTube Studio.
 
 ## Clipping other creators' videos
 
