@@ -99,6 +99,24 @@ Without a subtitle file, `pip install faster-whisper` transcribes it locally.
 
 Encoding a 9-minute long clip took about 2 minutes on a modest 4-core machine. Shorts take seconds.
 
+## What the agent can do
+
+| Command | What it's for |
+| --- | --- |
+| `./clipper inbox --channel C` | New uploads from the channel's creators that aren't clipped yet |
+| `./clipper skip ID --channel C` | Hide a video from the inbox |
+| `./clipper hotspots ID` | YouTube's *most replayed* moments, with the words spoken there |
+| `./clipper transcript ID` | Full transcript with chapters, and 🔥 on most-replayed lines |
+| `./clipper sheet ID --from 4:00 --to 6:00` | One image of stills across a stretch, to *see* the video |
+| `./clipper frames ID --at 5:03` / `--clip CLIP` | Stills of the source or of a finished clip |
+| `./clipper cut … --focus left` | Where to crop for vertical `fill` clips; edges snap to words |
+| `./clipper recut CLIP --hook … --reason …` | Redo a clip from review feedback |
+| `./clipper feedback --channel C` | Your approvals and rejections, which the agent reads before picking |
+| `./clipper approve CLIP --note …` / `reject CLIP --reason …` | Review. The notes teach the agent. |
+
+The workflows the agent follows (clip a video, inbox rounds, redo from review, channels) are
+spelled out in `CLAUDE.md`.
+
 ## Clipping other creators' videos
 
 Clipping without permission gets Content ID claims and copyright strikes, and three strikes

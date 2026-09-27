@@ -9,10 +9,17 @@ this does the downloading, cutting, reframing, captioning and bookkeeping.
     clipper add-creator CHANNEL @handle --permission "how and when they said yes"
     clipper fetch URL --channel NAME                 download a video + timed transcript
     clipper import FILE --channel NAME [--subs F]    use a local video (your own footage)
-    clipper transcript VIDEO_ID [--from S] [--to S]  print the transcript with timestamps
+    clipper inbox --channel NAME                     new uploads from the channel's creators, not yet clipped
+    clipper skip VIDEO_ID --channel NAME             hide a video from the inbox (not worth clipping)
+    clipper transcript VIDEO_ID [--from S] [--to S]  the transcript, with chapters and 🔥 most-replayed parts
+    clipper hotspots VIDEO_ID                        the most-replayed moments, with what is said in them
+    clipper frames VIDEO_ID --at 83,1:40 | --clip ID see the video: stills to look at
+    clipper sheet VIDEO_ID [--from S --to S]         one contact-sheet image of a stretch of the video
+    clipper feedback --channel NAME                  what you approved and rejected, and why
     clipper cut VIDEO_ID --channel NAME --format short|long --start S --end S --title "..."
     clipper queue [--channel NAME] [--status pending]
-    clipper approve CLIP_ID / clipper reject CLIP_ID [--reason "..."]
+    clipper recut CLIP_ID [--start S --end S --title ...]   redo a clip with changes
+    clipper approve CLIP_ID [--note "..."] / clipper reject CLIP_ID --reason "..."
 
 Times accept seconds (83.5) or mm:ss / hh:mm:ss. Your channels, downloads and clips live under
 $CLIP_FACTORY_HOME (default ~/ClipFactory), outside git: private, and shared by every agent's
@@ -39,6 +46,8 @@ HOME = Path(os.environ.get("CLIP_FACTORY_HOME", Path.home() / "ClipFactory")).ex
 CHANNELS_DIR = HOME / "channels"
 VIDEOS = HOME / "videos"
 REVIEW = HOME / "review"
+FRAMES = HOME / "frames"
+INBOX = HOME / "inbox"
 
 RIGHTS = {
     "own": "Your own footage",
@@ -445,8 +454,23 @@ def cmd_fetch(a):
         "duration": info.get("duration", 0), "license": info.get("license", ""),
         "channel": ch["name"], "fetched": dt.datetime.now().isoformat(timespec="seconds"),
         "permission": creator.get("permission", ""),
+        "uploadDate": info.get("upload_date", ""), "views": info.get("view_count"),
+        "description": (info.get("description") or "")[:2000],
+        # YouTube's "Most replayed" graph: where viewers rewatch. The strongest single clue to a good clip.
+        "heatmap": [{"start": h.get("start_time", 0), "end": h.get("end_time", 0), "value": h.get("value", 0)}
+                    for h in (info.get("heatmap") or [])],
+        "chapters": [{"start": c.get("start_time", 0), "end": c.get("end_time", 0), "title": c.get("title", "")}
+                     for c in (info.get("chapters") or [])],
     })
+    mark_inbox(ch["name"], vid, "fetched")
     print(f"{vid}  {info.get('title', '')}  ({fmt_time(info.get('duration', 0))}, {len(words)} words of transcript)")
+    extras = []
+    if info.get("heatmap"):
+        extras.append("most-replayed data: yes (see `clipper hotspots`)")
+    if info.get("chapters"):
+        extras.append(f"{len(info['chapters'])} chapters")
+    if extras:
+        print("  " + "; ".join(extras))
     if not words:
         print("warning: no transcript found; `pip install faster-whisper` to transcribe locally.", file=sys.stderr)
 
@@ -503,9 +527,286 @@ def cmd_transcript(a):
     words = read_json(d / "words.json")
     lo = parse_time(a.from_) if a.from_ else 0
     hi = parse_time(a.to) if a.to else float("inf")
+    heat = info.get("heatmap") or []
+    hot = heat_threshold(heat)
+    chapters = list(info.get("chapters") or [])
     print(f"# {info['title']} — {info.get('uploader', '')} ({fmt_time(info.get('duration', 0))})")
+    if heat:
+        print("# 🔥 = in YouTube's most-replayed stretch")
     for line in transcript_lines([w for w in words if lo <= w["t"] <= hi]):
-        print(f"[{fmt_time(line['t'])} {line['t']:.1f}s] {line['text']}")
+        while chapters and chapters[0]["start"] <= line["t"]:
+            c = chapters.pop(0)
+            print(f"\n## Chapter {fmt_time(c['start'])}: {c['title']}")
+        mark = "🔥 " if heat and heat_at(heat, line["t"]) >= hot else ""
+        print(f"[{fmt_time(line['t'])} {line['t']:.1f}s] {mark}{line['text']}")
+
+
+def heat_at(heat: list[dict], t: float) -> float:
+    for h in heat:
+        if h["start"] <= t < h["end"]:
+            return h["value"]
+    return 0.0
+
+
+def heat_threshold(heat: list[dict]) -> float:
+    """"Hot" means in the top 30% of the graph, and at least half the peak."""
+    if not heat:
+        return 1.1
+    vals = sorted(h["value"] for h in heat)
+    return max(vals[int(len(vals) * 0.7)], 0.5 * vals[-1])
+
+
+def hot_segments(heat: list[dict], top: int = 8) -> list[dict]:
+    """Merge neighbouring hot buckets into segments, strongest first."""
+    hot = heat_threshold(heat)
+    segs = []
+    for h in sorted(heat, key=lambda h: h["start"]):
+        if h["value"] < hot:
+            continue
+        if segs and h["start"] - segs[-1]["end"] < 1.0:
+            segs[-1]["end"] = h["end"]
+            segs[-1]["peak"] = max(segs[-1]["peak"], h["value"])
+        else:
+            segs.append({"start": h["start"], "end": h["end"], "peak": h["value"]})
+    return sorted(segs, key=lambda s: -s["peak"])[:top]
+
+
+def cmd_hotspots(a):
+    d = video_dir(a.video)
+    info = read_json(d / "info.json")
+    words = read_json(d / "words.json") if (d / "words.json").exists() else []
+    heat = info.get("heatmap") or []
+    if not heat:
+        print("No most-replayed data for this video (YouTube only shows it once a video has enough views).")
+        print("Read the whole transcript instead.")
+        return
+    print(f"# Most-replayed moments in {info['title']}, strongest first")
+    for i, sgm in enumerate(hot_segments(heat, a.top), 1):
+        # Viewers rewind to the payoff, so show some lead-up too.
+        lo, hi = max(0, sgm["start"] - 20), sgm["end"] + 10
+        text = " ".join(w["w"] for w in words if lo <= w["t"] <= hi)
+        print(f"\n{i}. {fmt_time(sgm['start'])}–{fmt_time(sgm['end'])} ({sgm['start']:.0f}s–{sgm['end']:.0f}s), "
+              f"strength {sgm['peak']:.2f}")
+        print(f"   context {fmt_time(lo)}–{fmt_time(hi)}: {text[:400]}{'…' if len(text) > 400 else ''}")
+
+
+def grab_frame(src: Path, t: float, dest: Path, width: int, label: str = "") -> bool:
+    """One still at time t, with an optional time label (drawn with the caption engine, which every
+    ffmpeg we use has; drawtext is missing from some builds). Falls back to no label."""
+    ff = ffmpeg_bin()
+    base = [ff, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{max(0, t):.2f}", "-i", str(src), "-frames:v", "1"]
+    with tempfile.TemporaryDirectory() as tmp:
+        if label:
+            family, font = pick_font({})
+            opt = ""
+            if font:
+                shutil.copy(font, Path(tmp, "f" + Path(font).suffix))
+                opt = ":fontsdir=."
+            size = max(14, width // 20)
+            Path(tmp, "label.ass").write_text(f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {width}
+PlayResY: {width * 9 // 16}
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: L,{family},{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H99000000,-1,0,0,0,100,100,0,0,3,4,0,7,8,8,8,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:10.00,L,,0,0,0,,{label}
+""", encoding="utf-8")
+            r = subprocess.run(base + ["-vf", f"scale={width}:-2,ass=label.ass{opt}", "-q:v", "4", str(dest)],
+                               cwd=tmp, capture_output=True)
+            if r.returncode == 0 and dest.exists():
+                return True
+        r = subprocess.run(base + ["-vf", f"scale={width}:-2", "-q:v", "4", str(dest)], cwd=tmp, capture_output=True)
+    return r.returncode == 0 and dest.exists()
+
+
+def cmd_frames(a):
+    if a.clip:
+        _, m = find_clip(a.clip)
+        src = REVIEW / m["channel"] / m["file"]
+        times = [m["duration"] * f for f in (0.08, 0.5, 0.92)]
+        out = FRAMES / "clips" / m["id"]
+    else:
+        if not a.video or not a.at:
+            die("use: frames VIDEO_ID --at 83,1:40  or  frames --clip CLIP_ID")
+        d = video_dir(a.video)
+        src = source_file(d)
+        times = [parse_time(x) for x in a.at.split(",") if x.strip()][:12]
+        out = FRAMES / a.video
+    out.mkdir(parents=True, exist_ok=True)
+    for t in times:
+        dest = out / f"{int(t * 10):06d}.jpg"
+        ok = grab_frame(src, t, dest, a.width, fmt_time(t))
+        print(f"{fmt_time(t):>8}  {dest if ok else '(could not read a frame here)'}")
+    print("Open these images to look at them.")
+
+
+def cmd_sheet(a):
+    """A grid of stills across a stretch of the video, to see it at a glance."""
+    d = video_dir(a.video)
+    info = read_json(d / "info.json")
+    src = source_file(d)
+    lo = parse_time(a.from_) if a.from_ else 0.0
+    hi = parse_time(a.to) if a.to else float(info.get("duration") or probe_duration(src))
+    n = max(4, min(a.count, 24))
+    cols = 4
+    out = FRAMES / a.video
+    out.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        for i in range(n):
+            t = lo + (hi - lo) * (i + 0.5) / n
+            if not grab_frame(src, t, Path(tmp, f"s{i:02d}.jpg"), 320, fmt_time(t)):
+                die(f"could not read a frame at {fmt_time(t)}")
+        rows = (n + cols - 1) // cols
+        dest = out / f"sheet-{int(lo)}-{int(hi)}.jpg"
+        r = subprocess.run([ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y", "-framerate", "1",
+                            "-i", "s%02d.jpg", "-vf", f"tile={cols}x{rows}:padding=4:color=black",
+                            "-frames:v", "1", "-q:v", "4", str(dest)], cwd=tmp, capture_output=True, text=True)
+        if r.returncode != 0:
+            die(f"could not build the contact sheet: {r.stderr.strip()[-300:]}")
+    print(f"{dest}\n{n} stills from {fmt_time(lo)} to {fmt_time(hi)}, left to right, top to bottom. Open it to look.")
+
+
+def snap_to_words(words: list[dict], start: float, end: float, duration: float = 0) -> tuple[float, float]:
+    """Start just before the first word and end just after the last, so nothing is cut mid-word.
+    Moves each edge by at most 1.5 s; the agent's choice of moment stands."""
+    inside = [w for w in words if w["e"] > start + 0.05 and w["t"] < end - 0.05]
+    if not inside:
+        return start, end
+    first, last = inside[0], inside[-1]
+    new_start = first["t"] - 0.25
+    after = [w for w in words if w["t"] >= last["e"] - 0.01 and w is not last]
+    new_end = last["e"] + 0.35
+    if after:
+        new_end = min(new_end, max(last["e"] + 0.05, after[0]["t"] - 0.05))
+    if duration:
+        new_end = min(new_end, duration)
+    if abs(new_start - start) > 1.5:
+        new_start = start
+    if abs(new_end - end) > 1.5:
+        new_end = end
+    return max(0.0, round(new_start, 2)), round(new_end, 2)
+
+
+def focus_value(v) -> float:
+    names = {"left": 0.2, "center": 0.5, "centre": 0.5, "middle": 0.5, "right": 0.8}
+    if v is None:
+        return 0.5
+    if str(v).lower() in names:
+        return names[str(v).lower()]
+    try:
+        return min(1.0, max(0.0, float(v)))
+    except ValueError:
+        die(f"--focus must be left, center, right or a number from 0 to 1, not {v!r}")
+
+
+def inbox_file(channel: str) -> Path:
+    return INBOX / f"{channel}.json"
+
+
+def mark_inbox(channel: str, video_id: str, status: str, reason: str = ""):
+    p = inbox_file(channel)
+    data = read_json(p) if p.exists() else {}
+    data[video_id] = {"status": status, "reason": reason, "at": dt.datetime.now().isoformat(timespec="seconds")}
+    write_json(p, data)
+
+
+def clips_by_video(channel: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for _, m in all_clips(channel):
+        if m.get("status") != "replaced":
+            v = m.get("source", {}).get("video", "")
+            counts[v] = counts.get(v, 0) + 1
+    return counts
+
+
+def inbox_rows(entries: list[dict], seen: dict, clipped: dict) -> list[dict]:
+    """Label each upload new / fetched / clipped / skipped."""
+    rows = []
+    for e in entries:
+        vid = e.get("id")
+        if not vid:
+            continue
+        status = "new"
+        if clipped.get(vid):
+            status = f"clipped ×{clipped[vid]}"
+        elif vid in seen:
+            status = seen[vid]["status"]
+        rows.append({**e, "status": status})
+    return rows
+
+
+def creator_url(c: dict) -> str:
+    if c.get("url"):
+        return c["url"]
+    h = str(c.get("handle", ""))
+    if h.startswith("UC"):
+        return f"https://www.youtube.com/channel/{h}/videos"
+    return f"https://www.youtube.com/{h if h.startswith('@') else '@' + h}/videos"
+
+
+def cmd_inbox(a):
+    ch = load_channel(a.channel)
+    try:
+        import yt_dlp
+    except ImportError:
+        die("yt-dlp is not installed: pip install yt-dlp")
+    sources = [(c.get("handle", "?"), creator_url(c)) for c in creator_entries(ch)]
+    sources += [(u, u) for u in ch.get("sources", [])]
+    if not sources:
+        die(f"channel '{ch['name']}' has no creators or sources to check. Add one: clipper add-creator {ch['name']} @handle --permission ...")
+    seen = read_json(inbox_file(ch["name"])) if inbox_file(ch["name"]).exists() else {}
+    clipped = clips_by_video(ch["name"])
+    opts = {"quiet": True, "skip_download": True, "extract_flat": "in_playlist", "playlistend": a.limit}
+    total_new = 0
+    for name, url in sources:
+        try:
+            with yt_dlp.YoutubeDL(opts) as y:
+                info = y.extract_info(url, download=False)
+        except Exception as err:  # one bad creator shouldn't hide the rest
+            print(f"\n{name}: could not list uploads ({str(err).splitlines()[0][:160]})")
+            continue
+        entries = [{"id": e.get("id"), "title": e.get("title") or "", "duration": e.get("duration") or 0,
+                    "url": e.get("url") or f"https://www.youtube.com/watch?v={e.get('id')}"}
+                   for e in (info.get("entries") or [])]
+        rows = inbox_rows(entries, seen, clipped)
+        shown = [r for r in rows if a.all or r["status"] == "new"]
+        total_new += sum(r["status"] == "new" for r in rows)
+        print(f"\n{name}  ({len(shown)} of {len(rows)} recent uploads shown)")
+        for r in shown:
+            print(f"  {r['status']:11} {fmt_time(r['duration']):>8}  {r['url']}  {r['title'][:80]}")
+    print(f"\n{total_new} new video(s). Clip one with: clipper fetch URL --channel {ch['name']}; "
+          f"hide one with: clipper skip VIDEO_ID --channel {ch['name']} --reason \"...\"")
+
+
+def cmd_skip(a):
+    load_channel(a.channel)
+    mark_inbox(a.channel, a.video, "skipped", a.reason)
+    print(f"skipped {a.video} for {a.channel}" + (f": {a.reason}" if a.reason else ""))
+
+
+def cmd_feedback(a):
+    clips = [m for _, m in all_clips(a.channel) if m.get("status") in ("approved", "rejected", "replaced")]
+    clips.sort(key=lambda m: m.get("reviewed", m["created"]), reverse=True)
+    if not clips:
+        print(f"No reviewed clips for '{a.channel}' yet. Nothing to learn from so far.")
+        return
+    counts = {s: sum(m["status"] == s for m in clips) for s in ("approved", "rejected", "replaced")}
+    print(f"# {a.channel}: {counts['approved']} approved, {counts['rejected']} rejected, {counts['replaced']} redone")
+    print("# Use this to choose moments, titles and hooks more like the approved ones.")
+    for m in clips[:a.limit]:
+        note = m.get("reason") or m.get("note") or ""
+        print(f"\n{m['status'].upper():8} [{m.get('format', '')} {fmt_time(m['duration'])}] {m['title']}")
+        if m.get("hook"):
+            print(f"         hook: {m['hook']}")
+        if m.get("why"):
+            print(f"         agent's reason: {m['why']}")
+        if note:
+            print(f"         reviewer: {note}")
 
 
 def source_file(d: Path) -> Path:
@@ -605,9 +906,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return head + "\n".join(events) + "\n"
 
 
-def video_filter(layout: str, w: int, h: int) -> str:
-    if layout == "fill":  # crop the middle of the frame to fill the screen
-        return f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1[v0]"
+def video_filter(layout: str, w: int, h: int, focus: float = 0.5) -> str:
+    if layout == "fill":  # crop to fill the screen; focus 0 = left edge of the frame, 1 = right edge
+        return (f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+                f"crop={w}:{h}:(iw-{w})*{focus:.3f}:(ih-{h})/2,setsar=1[v0]")
     if layout == "wide":  # plain landscape clip
         return f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1[v0]"
     # fit: whole frame in the middle, blurred copy of itself behind
@@ -647,6 +949,11 @@ def cmd_cut(a):
     if end <= start:
         die("--end must be after --start")
     lo, hi = float(style.get("minSeconds", 5)), float(style.get("maxSeconds", 180))
+    if words and not getattr(a, "exact", False):
+        s2, e2 = snap_to_words(words, start, end, float(info.get("duration") or 0))
+        if lo <= e2 - s2 <= hi and (s2, e2) != (start, end):
+            print(f"snapped to word edges: {start:.2f}–{end:.2f}s → {s2:.2f}–{e2:.2f}s (use --exact to keep yours)")
+            start, end = s2, e2
     if not lo <= end - start <= hi:
         die(f"clip is {fmt_time(end - start)}; '{ch['name']}' {fmt} clips must be {fmt_time(lo)}–{fmt_time(hi)} "
             f"(formats.{fmt}.minSeconds/maxSeconds)")
@@ -663,7 +970,8 @@ def cmd_cut(a):
     ff = ffmpeg_bin()
     has_ass = " ass " in subprocess.run([ff, "-hide_banner", "-filters"], capture_output=True, text=True).stdout
     with tempfile.TemporaryDirectory() as tmp:
-        vf = video_filter(layout, w, h)
+        focus = focus_value(getattr(a, "focus", None))
+        vf = video_filter(layout, w, h, focus)
         if has_ass and (a.hook or (style.get("captions", True) and style.get("captionMode") != "off")):
             family, font_file = pick_font(style)
             style["font"] = family
@@ -715,10 +1023,24 @@ def cmd_cut(a):
                    "uploader": info.get("uploader", ""), "start": start, "end": end},
         "rights": ch.get("rights"), "permission": info.get("permission", ""), "why": a.why or "",
         "created": dt.datetime.now().isoformat(timespec="seconds"),
+        # What was asked for, so `recut` can redo the clip with a change or two.
+        "request": {"summary": a.description or "", "tags": a.tags or "", "chapters": a.chapters or "",
+                    "thumb": a.thumb or "", "focus": getattr(a, "focus", None), "layout": a.layout},
     }
     write_json(out_dir / f"{clip_id}.json", meta)
     write_review_page(ch["name"])
     print(f"{clip_id}  {out}")
+    # Stills of the finished clip, for the agent to check captions, crop and hook actually look right.
+    previews = FRAMES / "clips" / clip_id
+    previews.mkdir(parents=True, exist_ok=True)
+    shots = []
+    for i, f in enumerate((0.08, 0.5, 0.92), 1):
+        dest = previews / f"{i}.jpg"
+        if grab_frame(out, (end - start) * f, dest, 360):
+            shots.append(str(dest))
+    if shots:
+        print("check the result by looking at: " + "  ".join(shots))
+    return clip_id
 
 
 def all_clips(channel: str | None = None) -> list[tuple[Path, dict]]:
@@ -748,11 +1070,42 @@ def find_clip(clip_id: str) -> tuple[Path, dict]:
     die(f"no clip '{clip_id}'")
 
 
-def set_status(clip_id: str, status: str, reason: str = ""):
+def cmd_recut(a):
+    """Cut a clip again with some changes; the old one is marked replaced."""
+    import argparse
+    p, m = find_clip(a.clip)
+    req = m.get("request", {})
+    src = m["source"]
+    args = argparse.Namespace(
+        video=src["video"], channel=m["channel"], format=a.format or m.get("format"),
+        start=a.start if a.start is not None else src["start"], end=a.end if a.end is not None else src["end"],
+        title=a.title or m["title"], hook=a.hook if a.hook is not None else m.get("hook", ""),
+        description=a.description if a.description is not None else req.get("summary", ""),
+        tags=a.tags if a.tags is not None else req.get("tags", ""),
+        layout=a.layout or req.get("layout"), focus=a.focus if a.focus is not None else req.get("focus"),
+        chapters=a.chapters if a.chapters is not None else req.get("chapters", ""),
+        thumb=a.thumb if a.thumb is not None else req.get("thumb", ""),
+        why=a.why or m.get("why", ""), exact=a.exact,
+    )
+    new_id = cmd_cut(args)
+    m = read_json(p)
+    m["status"] = "replaced"
+    m["replacedBy"] = new_id
+    m["reviewed"] = dt.datetime.now().isoformat(timespec="seconds")
+    if a.reason:
+        m["reason"] = a.reason
+    write_json(p, m)
+    write_review_page(m["channel"])
+    print(f"replaced {m['id']} with {new_id}")
+
+
+def set_status(clip_id: str, status: str, reason: str = "", note: str = ""):
     p, m = find_clip(clip_id)
     m["status"] = status
     if reason:
         m["reason"] = reason
+    if note:
+        m["note"] = note
     m["reviewed"] = dt.datetime.now().isoformat(timespec="seconds")
     write_json(p, m)
     write_review_page(m["channel"])
@@ -878,7 +1231,54 @@ def main():
     c.add_argument("--chapters", help="long clips: '0:00 Intro; 2:15 Topic; 7:40 Payoff' (times within the clip)")
     c.add_argument("--thumb", help="long clips: source time for the thumbnail frame")
     c.add_argument("--why", help="one line on why this moment works (shown on the review page)")
+    c.add_argument("--focus", help="fill layout: where to crop, left/center/right or 0-1 (default center)")
+    c.add_argument("--exact", action="store_true", help="keep start/end exactly (default: snap to word edges)")
     c.set_defaults(fn=cmd_cut)
+
+    rc = sub.add_parser("recut", help="redo a clip with changes (the old one is marked replaced)")
+    rc.add_argument("clip")
+    for opt in ("--start", "--end", "--title", "--hook", "--description", "--tags", "--format", "--focus",
+                "--chapters", "--thumb", "--why", "--reason"):
+        rc.add_argument(opt)
+    rc.add_argument("--layout", choices=["fit", "fill", "wide"])
+    rc.add_argument("--exact", action="store_true")
+    rc.set_defaults(fn=cmd_recut)
+
+    ib = sub.add_parser("inbox", help="recent uploads from the channel's creators that aren't clipped yet")
+    ib.add_argument("--channel", required=True)
+    ib.add_argument("--limit", type=int, default=10, help="uploads to check per creator")
+    ib.add_argument("--all", action="store_true", help="also show ones already fetched, clipped or skipped")
+    ib.set_defaults(fn=cmd_inbox)
+
+    sk = sub.add_parser("skip", help="hide a video from the inbox")
+    sk.add_argument("video")
+    sk.add_argument("--channel", required=True)
+    sk.add_argument("--reason", default="")
+    sk.set_defaults(fn=cmd_skip)
+
+    hs = sub.add_parser("hotspots", help="YouTube's most-replayed moments, with the words in them")
+    hs.add_argument("video")
+    hs.add_argument("--top", type=int, default=8)
+    hs.set_defaults(fn=cmd_hotspots)
+
+    fr = sub.add_parser("frames", help="stills to look at: --at times in a source video, or --clip for a finished clip")
+    fr.add_argument("video", nargs="?")
+    fr.add_argument("--at", help="comma-separated times, e.g. 83,1:40,2:05")
+    fr.add_argument("--clip", help="a clip id: three stills of the finished clip")
+    fr.add_argument("--width", type=int, default=480)
+    fr.set_defaults(fn=cmd_frames)
+
+    sh = sub.add_parser("sheet", help="one grid image of stills across a stretch of the video")
+    sh.add_argument("video")
+    sh.add_argument("--from", dest="from_")
+    sh.add_argument("--to")
+    sh.add_argument("--count", type=int, default=12)
+    sh.set_defaults(fn=cmd_sheet)
+
+    fb = sub.add_parser("feedback", help="what the reviewer approved and rejected, and why")
+    fb.add_argument("--channel", required=True)
+    fb.add_argument("--limit", type=int, default=15)
+    fb.set_defaults(fn=cmd_feedback)
 
     q = sub.add_parser("queue")
     q.add_argument("--channel")
@@ -887,10 +1287,11 @@ def main():
 
     ap = sub.add_parser("approve")
     ap.add_argument("clip")
-    ap.set_defaults(fn=lambda a: set_status(a.clip, "approved"))
+    ap.add_argument("--note", default="", help="what was good about it (the agent learns from this)")
+    ap.set_defaults(fn=lambda a: set_status(a.clip, "approved", note=a.note))
     rj = sub.add_parser("reject")
     rj.add_argument("clip")
-    rj.add_argument("--reason", default="")
+    rj.add_argument("--reason", default="", help="what was wrong (the agent learns from this)")
     rj.set_defaults(fn=lambda a: set_status(a.clip, "rejected", a.reason))
 
     a = p.parse_args()

@@ -146,3 +146,39 @@ class Fonts(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".ttf", delete=False) as f:
             pass
         self.assertEqual(clipper.pick_font({"font": "Mine", "fontFile": f.name}), ("Mine", f.name))
+
+
+class Abilities(unittest.TestCase):
+    def test_snap_trims_silence_and_finishes_the_last_word(self):
+        words = clipper.words_from_cues([(10, 12, "fresh air works"), (13, 14, "next line")])
+        s, e = clipper.snap_to_words(words, 9.2, 11.9)
+        self.assertEqual(s, 9.75)              # just before "fresh" at 10.0
+        self.assertGreaterEqual(e, words[2]["e"])  # "works" not cut off
+        self.assertLess(e, 13.0)               # doesn't bleed into the next line
+
+    def test_snap_never_moves_an_edge_far(self):
+        words = clipper.words_from_cues([(20, 22, "late start")])
+        self.assertEqual(clipper.snap_to_words(words, 10, 23)[0], 10)
+
+    def test_hot_segments_merge_and_rank(self):
+        heat = [{"start": i * 10, "end": (i + 1) * 10, "value": v} for i, v in enumerate([.1, .9, 1.0, .1, .1, .8, .1, .1, .1, .1])]
+        segs = clipper.hot_segments(heat)
+        self.assertEqual((segs[0]["start"], segs[0]["end"], segs[0]["peak"]), (10, 30, 1.0))
+        self.assertEqual(segs[1]["start"], 50)
+        self.assertEqual(clipper.heat_at(heat, 25), 1.0)
+
+    def test_focus_words_and_numbers(self):
+        self.assertEqual(clipper.focus_value("left"), 0.2)
+        self.assertEqual(clipper.focus_value("0.7"), 0.7)
+        self.assertEqual(clipper.focus_value(None), 0.5)
+        self.assertIn("(iw-1080)*0.200", clipper.video_filter("fill", 1080, 1920, 0.2))
+
+    def test_inbox_labels(self):
+        rows = clipper.inbox_rows([{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": None}],
+                                  {"b": {"status": "skipped"}}, {"c": 2})
+        self.assertEqual([r["status"] for r in rows], ["new", "skipped", "clipped ×2"])
+
+    def test_creator_urls(self):
+        self.assertEqual(clipper.creator_url({"handle": "@Host"}), "https://www.youtube.com/@Host/videos")
+        self.assertEqual(clipper.creator_url({"handle": "Host"}), "https://www.youtube.com/@Host/videos")
+        self.assertIn("/channel/UCabc", clipper.creator_url({"handle": "UCabc"}))
