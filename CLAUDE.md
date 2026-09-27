@@ -8,6 +8,19 @@ get better.
 Always run the tool as `./clipper …` from the repo folder. It picks the right Python on every
 system, and it's the command you're allowed to run without asking.
 
+## Commands
+
+The user usually starts you with one of these, from the preset buttons in Agent Colony. Each one
+points at a workflow below.
+
+| Command | Workflow |
+| --- | --- |
+| `/clip <link> [channel] [short\|long\|both] [notes]` | A |
+| `/rounds [channel] [max]` | B |
+| `/redo [channel]` | C |
+| `/channel <request in plain words>` | D |
+| `/upload [channel] [privacy] [schedule]` | E |
+
 ## Which workflow
 
 | The user says something like | Workflow |
@@ -67,7 +80,9 @@ system, and it's the command you're allowed to run without asking.
 1. `./clipper inbox --channel <ch>` lists recent uploads from every allowed creator that aren't
    fetched, clipped or skipped yet.
 2. For each new video, judge from the title and length whether it's worth clipping for this channel.
-   - Worth it: run workflow A. If there are several, say so. The user can launch one agent per video in the colony.
+   - Worth it: `./clipper dispatch <url> --channel <ch> [--format short|long|both]` starts a separate
+     agent for that video in Agent Colony, each in its own worktree, all working in parallel. Dispatch
+     at most 3 per round unless the user said otherwise. If the colony isn't running, clip one yourself (workflow A).
    - Not worth it: `./clipper skip <video-id> --channel <ch> --reason "…"` so it stops showing up.
 3. Report what you clipped, what you skipped, and what's left.
 

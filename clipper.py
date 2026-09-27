@@ -19,6 +19,7 @@ this does the downloading, cutting, reframing, captioning and bookkeeping.
     clipper cut VIDEO_ID --channel NAME --format short|long --start S --end S --title "..."
     clipper queue [--channel NAME] [--status pending]
     clipper recut CLIP_ID [--start S --end S --title ...]   redo a clip with changes
+    clipper dispatch URL --channel NAME [--format both] hand a video to a new agent in Agent Colony
     clipper connect --channel NAME                   sign in to the YouTube channel it posts to (once)
     clipper upload CLIP_ID... | --approved --channel NAME [--privacy private] [--at "2026-10-01 18:00" --every 24h]
     clipper approve CLIP_ID [--note "..."] / clipper reject CLIP_ID --reason "..."
@@ -798,6 +799,43 @@ def cmd_inbox(a):
           f"hide one with: clipper skip VIDEO_ID --channel {ch['name']} --reason \"...\"")
 
 
+def main_repo() -> Path:
+    """The main checkout of this repo, even when running inside an agent's worktree."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=ROOT,
+                             capture_output=True, text=True, timeout=20)
+        if out.returncode == 0 and out.stdout.strip():
+            return Path(out.stdout.strip()).resolve().parent
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return ROOT
+
+
+def cmd_dispatch(a):
+    """Ask Agent Colony to start a new clipping agent for one video (it gets its own worktree)."""
+    import urllib.error
+    import urllib.request
+    load_channel(a.channel)
+    colony = os.environ.get("CLIP_COLONY_URL", "http://127.0.0.1:5274").rstrip("/")
+    prompt = f"/clip {a.url} {a.channel} {a.format}" + (f" {a.note}" if a.note else "")
+    body = json.dumps({"repo": str(main_repo()), "prompt": prompt, "tool": "claude-code",
+                       "permissionMode": "acceptEdits", "worktree": True}).encode()
+    req = urllib.request.Request(f"{colony}/api/tasks", data=body, method="POST",
+                                 headers={"content-type": "application/json", "x-colony": "1"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            res = json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as err:
+        die(f"Agent Colony refused: {json.loads(err.read() or b'{}').get('error', err.reason)}")
+    except (urllib.error.URLError, OSError):
+        die(f"Agent Colony isn't running at {colony}. Start it (desktop shortcut), or clip this video yourself.")
+    wt = (res.get("worktree") or {}).get("branch", "")
+    m = re.search(r"(?:v=|youtu\.be/|shorts/|live/)([\w-]{11})", a.url)
+    if m:
+        mark_inbox(a.channel, m.group(1), "dispatched")
+    print(f"dispatched: a new agent is clipping {a.url} for {a.channel}" + (f" (branch {wt})" if wt else ""))
+
+
 def cmd_skip(a):
     load_channel(a.channel)
     mark_inbox(a.channel, a.video, "skipped", a.reason)
@@ -1486,6 +1524,13 @@ def main():
     ib.add_argument("--limit", type=int, default=10, help="uploads to check per creator")
     ib.add_argument("--all", action="store_true", help="also show ones already fetched, clipped or skipped")
     ib.set_defaults(fn=cmd_inbox)
+
+    dp = sub.add_parser("dispatch", help="start a new clipping agent for a video in Agent Colony")
+    dp.add_argument("url")
+    dp.add_argument("--channel", required=True)
+    dp.add_argument("--format", default="both", choices=["short", "long", "both"])
+    dp.add_argument("--note", default="", help="extra instructions for that agent")
+    dp.set_defaults(fn=cmd_dispatch)
 
     sk = sub.add_parser("skip", help="hide a video from the inbox")
     sk.add_argument("video")
