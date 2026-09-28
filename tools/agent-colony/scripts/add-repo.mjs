@@ -39,6 +39,20 @@ if (flags.includes('--allow')) {
   state.allowed = state.allowed || {}
   state.allowed[dir] = [...new Set([...(state.allowed[dir] || []), ...asks])]
   if (asks.length) console.log(`Agents launched there may run: ${asks.join(', ')}`)
+  // Folders the repo declares in .colony/dirs.json (same rules as the server).
+  let dirs = []
+  try {
+    const list = JSON.parse(await fs.readFile(path.join(dir, '.colony', 'dirs.json'), 'utf8'))
+    dirs = (Array.isArray(list) ? list : []).filter((x) => x && typeof x === 'object').slice(0, 4).map((x) => {
+      const base = ((x.env && process.env[x.env]) || x.default || x.dir || '').replace(/^~(?=$|[\\/])/, os.homedir())
+      return path.resolve(dir, base, x.sub || '')
+    })
+  } catch { /* none */ }
+  if (dirs.length) {
+    state.allowedDirs = state.allowedDirs || {}
+    state.allowedDirs[dir] = [...new Set([...(state.allowedDirs[dir] || []), ...dirs])]
+    console.log(`...and use: ${dirs.join(', ')}`)
+  }
 }
 
 await fs.mkdir(path.dirname(STATE), { recursive: true })

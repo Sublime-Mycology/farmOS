@@ -31,6 +31,19 @@ npm start            # http://127.0.0.1:5274/
 Needs Node 20+ and git. To launch agents you also need at least one agent CLI on your `PATH`
 (see [Tools](#tools)).
 
+## What a repo can offer the colony
+
+Optional files in a repo's `.colony/` folder:
+
+| File | What it adds to the repo's plot |
+| --- | --- |
+| `prompts.json` | One-click prompt buttons: `[{ "label", "prompt" }]` |
+| `schedule.json` | Recurring runs, each off until ticked: `[{ "id", "label", "prompt", "at": "09:00", "days": "daily" \| "weekdays" \| "mon,thu" }]`. They run while the colony runs; a time missed earlier that day runs once when it next starts |
+| `pages.json` | Folders to browse from the colony, and from a phone: `[{ "label", "env", "default", "sub" }]` |
+| `dirs.json` | Folders outside the repo its agents need. They're passed as `--add-dir`, and only after you press **Allow** |
+
+Commands a repo's `.claude/settings.json` asks for are granted the same way, with **Allow**.
+
 ## On your phone
 
 Start the colony with `node server.mjs --phone` (the Windows desktop shortcut does). Then on the

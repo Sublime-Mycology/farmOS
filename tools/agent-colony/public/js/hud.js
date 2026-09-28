@@ -217,7 +217,9 @@ export class Hud {
         <button class="btn small" data-act="reveal">${ICON.folder} Finder</button>
         <button class="btn small" data-act="copy">${ICON.copy} Copy path</button>
       </div>
+      ${repo.pages?.length ? `<div class="btn-row">${repo.pages.map((pg, i) => `<a class="btn small" target="_blank" href="/pages/${repo.tag}/${i}/">${esc(pg.label)}</a>`).join('')}</div>` : ''}
       <div data-part="perms"></div>
+      <div data-part="schedules"></div>
       <div class="section-title" data-part="count"></div>
       <ul class="list" data-part="list"></ul>`
   }
@@ -328,6 +330,7 @@ export class Hud {
     if (!repo) return
     this.body.querySelector('[data-part="count"]').textContent = `${repo.threads.length} thread${repo.threads.length === 1 ? '' : 's'}`
     this.renderPerms(repo)
+    this.renderSchedules(repo)
     setList(list, repo.threads.map((t) => `
       <li data-thread="${esc(t.id)}" class="${this.app.selection.thread === t.id ? 'sel' : ''}" title="${esc(t.title)}">
         <span class="dot ${t.status}"></span><span class="title">${esc(t.title)}</span><span class="when">${ago(t.updatedAt)}</span>
@@ -338,23 +341,52 @@ export class Hud {
     }
   }
 
+  /** Recurring runs the repo offers (.colony/schedule.json); each is off until switched on here. */
+  renderSchedules(repo) {
+    const el = this.body.querySelector('[data-part="schedules"]')
+    const list = repo.schedules || []
+    const sig = JSON.stringify(list)
+    if (!el || el.dataset.sig === sig) return
+    el.dataset.sig = sig
+    if (!list.length) { el.innerHTML = ''; return }
+    const when = (x) => `${x.days === 'daily' ? 'Daily' : x.days === 'weekdays' ? 'Weekdays' : x.days.split(/[\s,]+/).map((d) => d[0].toUpperCase() + d.slice(1)).join(', ')} ${x.at}`
+    el.innerHTML = `<div class="section-title">Autopilot schedule</div><ul class="list sched">${list.map((x) => `
+      <li><label class="check"><input type="checkbox" data-sched="${esc(x.id)}" ${x.enabled ? 'checked' : ''}></label>
+        <span class="title" title="${esc(x.prompt)}">${esc(x.label)}<br><small class="muted">${esc(when(x))}${x.lastRun ? ` · last ${ago(x.lastRun)}` : ''}</small></span>
+        <button class="btn small" data-run="${esc(x.id)}">Run now</button></li>`).join('')}</ul>
+      <p class="muted" style="font-size:11px;margin:4px">Runs while the colony is open on your computer.</p>`
+    el.querySelectorAll('[data-sched]').forEach((cb) => cb.addEventListener('change', async () => {
+      await fetch('/api/repos/schedule', { method: 'POST', headers: { 'content-type': 'application/json', 'x-colony': '1' },
+        body: JSON.stringify({ repo: repo.key, id: cb.dataset.sched, enabled: cb.checked }) })
+      this.toast(cb.checked ? 'Scheduled.' : 'Schedule off.')
+      this.app.refreshSoon()
+    }))
+    el.querySelectorAll('[data-run]').forEach((b) => b.addEventListener('click', async () => {
+      const r = await fetch('/api/repos/schedule/run', { method: 'POST', headers: { 'content-type': 'application/json', 'x-colony': '1' },
+        body: JSON.stringify({ repo: repo.key, id: b.dataset.run }) }).then((x) => x.json())
+      this.toast(r.ok ? 'Started. Watch for the bot leaving the cabin.' : esc(r.error || 'Could not start it'))
+      this.app.refreshSoon()
+    }))
+  }
+
   /** Commands agents launched here may run without asking. Suggested by the repo, granted by you. */
   renderPerms(repo) {
     const el = this.body.querySelector('[data-part="perms"]')
-    const sig = JSON.stringify([repo.allowedTools, repo.suggestedTools])
+    const sig = JSON.stringify([repo.allowedTools, repo.suggestedTools, repo.allowedDirs, repo.suggestedDirs])
     if (!el || el.dataset.sig === sig) return
     el.dataset.sig = sig
     const code = (xs) => xs.map((x) => `<code>${esc(x)}</code>`).join(' ')
     el.innerHTML = `
-      ${repo.suggestedTools.length ? `<div class="banner">This repo asks to let its agents run ${code(repo.suggestedTools)} without asking.
+      ${repo.suggestedTools.length || repo.suggestedDirs?.length ? `<div class="banner">This repo asks to let its agents
+        ${repo.suggestedTools.length ? `run ${code(repo.suggestedTools)} without asking` : ''}${repo.suggestedTools.length && repo.suggestedDirs?.length ? ', and ' : ''}${repo.suggestedDirs?.length ? `use the folder${repo.suggestedDirs.length > 1 ? 's' : ''} ${code(repo.suggestedDirs)}` : ''}.
         <div class="btn-row" style="grid-template-columns:auto;justify-content:start"><button class="btn small" data-act="allow">Allow for agents launched here</button></div></div>` : ''}
-      ${repo.allowedTools.length ? `<div class="allowed">Agents here may run ${code(repo.allowedTools)} <button class="back" data-act="revoke">Revoke</button></div>` : ''}`
+      ${repo.allowedTools.length || repo.allowedDirs?.length ? `<div class="allowed">Agents here may ${repo.allowedTools.length ? `run ${code(repo.allowedTools)}` : ''}${repo.allowedDirs?.length ? ` use ${code(repo.allowedDirs)}` : ''} <button class="back" data-act="revoke">Revoke</button></div>` : ''}`
     el.querySelector('[data-act="allow"]')?.addEventListener('click', async () => {
-      await api.allowTools(repo.key, [...repo.allowedTools, ...repo.suggestedTools]).catch((e) => this.toast(esc(e.message)))
+      await api.allowTools(repo.key, [...repo.allowedTools, ...repo.suggestedTools], [...(repo.allowedDirs || []), ...(repo.suggestedDirs || [])]).catch((e) => this.toast(esc(e.message)))
       this.app.refreshSoon()
     })
     el.querySelector('[data-act="revoke"]')?.addEventListener('click', async () => {
-      await api.allowTools(repo.key, []).catch((e) => this.toast(esc(e.message)))
+      await api.allowTools(repo.key, [], []).catch((e) => this.toast(esc(e.message)))
       this.app.refreshSoon()
     })
   }
@@ -370,7 +402,7 @@ export class Hud {
       this.cardFor = null
       return
     }
-    const sig = JSON.stringify([t.id, t.status, t.title, t.activity, t.pct, t.errands.length, Math.floor(t.updatedAt / 30000)])
+    const sig = JSON.stringify([t.id, t.status, t.title, t.activity, t.pct, t.errands.length, Math.floor(t.updatedAt / 30000), (t.reply || '').length, this.replyOpen === t.id])
     if (!force && sig === this.cardSig) return
     if (sig === this.cardSig && this.cardFor === id) return
     const keepReply = this.cardFor === id ? this.card.querySelector('.reply input')?.value || '' : ''
@@ -395,6 +427,8 @@ export class Hud {
         ${t.worktree ? `<div class="wt" data-part="wt">Own worktree <b>${esc(t.worktree)}</b></div>` : ''}
       </div>
       ${t.activity ? `<div class="activity">${esc(t.activity)}</div>` : ''}
+      ${t.reply && t.reply.length > 100 ? `<button class="back" data-act="full">${this.replyOpen === t.id ? 'Hide full reply' : 'Read full reply'}</button>
+        ${this.replyOpen === t.id ? `<div class="reply-full">${esc(t.reply)}</div>` : ''}` : ''}
       ${t.errands.length ? `<div class="errands">${t.errands.length} subagent${t.errands.length > 1 ? 's' : ''} out on errands</div>` : ''}
       <div class="btn-row">
         <button class="btn small primary" data-act="open">${ICON.open} Open</button>
@@ -415,6 +449,10 @@ export class Hud {
       this.app.refreshSoon()
     })
     on('viewed', () => this.markViewed(t.id))
+    on('full', () => {
+      this.replyOpen = this.replyOpen === t.id ? null : t.id
+      this.renderCard(true)
+    })
     on('rmwt', () => this.removeWorktree(t))
     if (t.worktree) this.loadWorktree(t)
     on('stop', async () => { await api.stopTask(t.taskId); this.app.refreshSoon() })

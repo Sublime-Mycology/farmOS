@@ -148,6 +148,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .phone-link .qr { background: #fff; border-radius: 8px; padding: 6px; width: 170px; margin: 6px 0; }
 .phone-link .qr svg { display: block; width: 100%; height: auto; }
 .phone-link input { width: 100%; font-size: 11px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px; }
+.reply-full { margin-top: 6px; max-height: 45vh; overflow-y: auto; white-space: pre-wrap; font-size: 12px; line-height: 1.45;
+  background: rgba(0, 0, 0, 0.25); border-radius: 9px; padding: 8px 10px; }
+.sched li { cursor: default; }
+.sched small { font-size: 11px; }
+a.btn { text-decoration: none; color: inherit; }
 .tool-tag { display: inline-block; font-size: 10.5px; padding: 1px 6px; border-radius: 99px; background: rgba(255, 255, 255, 0.08); color: var(--text); margin-right: 2px; }
 .card .wt { margin-top: 4px; }
 

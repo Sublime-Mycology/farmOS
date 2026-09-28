@@ -72,11 +72,13 @@ const claudeCode = {
   watches: true,
   permissionModes: ['acceptEdits', 'plan', 'default', 'bypassPermissions'],
   promptOnStdin: true,
-  args(prompt, { permissionMode, resume, allowedTools = [] }) {
+  args(prompt, { permissionMode, resume, allowedTools = [], addDirs = [] }) {
     const a = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', permissionMode]
     if (resume) a.push('--resume', resume)
     // Commands you allowed for this repo in the colony (headless runs can't ask).
     if (allowedTools.length) a.push('--allowedTools', allowedTools.join(','))
+    // Folders outside the worktree the repo's agents work in (granted per repo in the colony).
+    for (const d of addDirs) a.push('--add-dir', d)
     return a
   },
   canResume: true,

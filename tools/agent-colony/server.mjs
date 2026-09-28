@@ -6,7 +6,7 @@
 
 import http from 'node:http'
 import fs from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, createReadStream } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -134,6 +134,7 @@ async function buildColony() {
         branch: task.branch,
         model: '',
         activity: task.activity,
+        reply: (task.log || []).slice(-12).map((l) => l.line).join('\n').slice(-6000),
         status: task.alive ? 'running' : task.status,
         live: task.alive,
         startedAt: task.startedAt,
@@ -191,6 +192,14 @@ async function buildColony() {
       allowedTools: state.allowed?.[repo] || [],
       suggestedTools: DEMO ? [] : (await suggestedTools(repo)).filter((x) => !(state.allowed?.[repo] || []).includes(x)),
       prompts: DEMO ? [] : await repoPrompts(repo),
+      allowedDirs: state.allowedDirs?.[repo] || [],
+      suggestedDirs: DEMO ? [] : (await repoDirs(repo)).filter((x) => !(state.allowedDirs?.[repo] || []).includes(x)),
+      schedules: DEMO ? [] : (await repoSchedules(repo)).map((x) => {
+        const mine = scheduleState(repo, x.id)
+        return { ...x, enabled: !!mine.enabled, lastRun: mine.lastRun || 0, lastResult: mine.lastResult || '' }
+      }),
+      pages: DEMO ? [] : await repoPages(repo),
+      tag: repoTag(repo),
     })
   }
   out.sort((a, b) => a.name.localeCompare(b.name))
@@ -211,6 +220,177 @@ async function suggestedTools(repo) {
   } catch {
     return []
   }
+}
+
+/** Start one agent in a repo: the one path used by the composer, dispatch and the scheduler. */
+async function launchTask({ repoPath, prompt, toolId = 'claude-code', permissionMode = 'acceptEdits', worktree: wantWorktree = true }) {
+  const repo = knownRepo(repoPath)
+  if (!repo) return { code: 400, error: 'Unknown repo' }
+  if (!existsSync(repo.path) && !DEMO) return { code: 400, error: `Folder not found: ${repo.path}` }
+  prompt = String(prompt || '').trim()
+  if (!prompt) return { code: 400, error: 'Tell the agent what to do' }
+  const t = tool(String(toolId || 'claude-code'))
+  if (!t) return { code: 400, error: `Unknown tool: ${toolId}` }
+  if (DEMO) {
+    const task = startDemoTask({ repo: repo.path, prompt, toolId: t.id, worktree: wantWorktree })
+    return { ok: true, taskId: task.id }
+  }
+  if (!t.available) return { code: 400, error: `${t.name} (${t.bin}) was not found on PATH` }
+  let worktree = null
+  let note = ''
+  if (wantWorktree) {
+    try {
+      worktree = await createWorktree(repo.path, prompt)
+      if (!worktree) note = 'Not a git repo, so this agent is working in the folder itself.'
+    } catch (err) {
+      return { code: 500, error: `Could not create a worktree: ${String(err.stderr || err.message).trim()}` }
+    }
+  }
+  const task = startTask({
+    toolId: t.id, repo: repo.path, cwd: worktree ? worktree.path : repo.path, prompt, worktree,
+    permissionMode, allowedTools: state.allowed?.[repo.path] || [], addDirs: state.allowedDirs?.[repo.path] || [],
+  })
+  return { ok: true, taskId: task.id, worktree, note }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Schedules: a repo lists recurring prompts in .colony/schedule.json. Each is off until switched on
+// in the colony, and runs while the colony is running (a missed time runs once when it next starts
+// that day).
+
+const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+
+async function repoSchedules(repo) {
+  try {
+    const list = JSON.parse(await fs.readFile(path.join(repo, '.colony', 'schedule.json'), 'utf8'))
+    return (Array.isArray(list) ? list : [])
+      .filter((x) => x && /^[\w-]{1,40}$/.test(x.id || '') && typeof x.prompt === 'string' && /^\d{1,2}:\d{2}$/.test(x.at || ''))
+      .slice(0, 12)
+      .map((x) => ({ id: x.id, label: String(x.label || x.id).slice(0, 40), prompt: x.prompt.slice(0, 2000),
+        at: x.at, days: String(x.days || 'daily').toLowerCase() }))
+  } catch {
+    return []
+  }
+}
+
+function scheduleState(repoPath, id) {
+  state.schedules = state.schedules || {}
+  state.schedules[repoPath] = state.schedules[repoPath] || {}
+  return (state.schedules[repoPath][id] = state.schedules[repoPath][id] || { enabled: false, lastRun: 0 })
+}
+
+function runsOn(days, date) {
+  const d = DAY_NAMES[date.getDay()]
+  if (days === 'daily') return true
+  if (days === 'weekdays') return d !== 'sat' && d !== 'sun'
+  return days.split(/[\s,]+/).includes(d)
+}
+
+/** The most recent time this schedule should have run, or 0 if not yet today. */
+function dueTime(entry, now = new Date()) {
+  const [h, m] = entry.at.split(':').map(Number)
+  const t = new Date(now)
+  t.setHours(h, m, 0, 0)
+  return runsOn(entry.days, now) && t <= now ? t.getTime() : 0
+}
+
+async function runSchedule(repoPath, entry) {
+  const mine = scheduleState(repoPath, entry.id)
+  const running = mine.taskId && listTasks().some((t) => t.id === mine.taskId && t.alive)
+  if (running) return { code: 409, error: 'The last run is still going' }
+  mine.lastRun = Date.now()
+  const r = await launchTask({ repoPath, prompt: entry.prompt })
+  if (r.ok) mine.taskId = r.taskId
+  mine.lastResult = r.ok ? 'started' : r.error
+  save()
+  return r
+}
+
+async function tickSchedules() {
+  if (DEMO || !lastColony) return
+  for (const repo of lastColony.repos) {
+    for (const entry of repo.schedules || []) {
+      const mine = scheduleState(repo.path, entry.id)
+      const due = dueTime(entry)
+      if (mine.enabled && due && mine.lastRun < due) {
+        console.log(`schedule: running "${entry.label}" in ${repo.name}`)
+        await runSchedule(repo.path, entry)
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pages: folders a repo lets you browse from the colony (e.g. Clip Factory's review pages), so they
+// work from a phone too. Declared in .colony/pages.json; nothing outside those folders is served.
+
+const repoTag = (p) => crypto.createHash('sha1').update(path.resolve(p)).digest('hex').slice(0, 10)
+
+/** A folder named in a repo's .colony files: {env, default, sub} or {dir}. "~" is the home folder. */
+function resolveRepoDir(repo, x) {
+  let base = (x.env && process.env[x.env]) || x.default || x.dir || ''
+  base = base.replace(/^~(?=$|[\\/])/, os.homedir())
+  return path.resolve(repo, base, x.sub || '')
+}
+
+/** Extra folders a repo's agents need to read and write (.colony/dirs.json), granted with Allow. */
+async function repoDirs(repo) {
+  try {
+    const list = JSON.parse(await fs.readFile(path.join(repo, '.colony', 'dirs.json'), 'utf8'))
+    return (Array.isArray(list) ? list : []).filter((x) => x && typeof x === 'object').slice(0, 4).map((x) => resolveRepoDir(repo, x))
+  } catch {
+    return []
+  }
+}
+
+async function repoPages(repo) {
+  try {
+    const list = JSON.parse(await fs.readFile(path.join(repo, '.colony', 'pages.json'), 'utf8'))
+    return (Array.isArray(list) ? list : []).filter((x) => x && typeof x.label === 'string').slice(0, 8)
+      .map((x) => ({ label: x.label.slice(0, 40), dir: resolveRepoDir(repo, x) }))
+  } catch {
+    return []
+  }
+}
+
+async function servePage(req, res, base, rel, prefix) {
+  const file = path.resolve(base, '.' + path.posix.normalize('/' + rel))
+  if (!file.startsWith(base + path.sep) && file !== base) return send(res, 404, { error: 'not found' })
+  let st
+  try { st = await fs.stat(file) } catch { return send(res, 404, 'Nothing here yet.', 'text/plain; charset=utf-8') }
+  if (st.isDirectory()) {
+    if (!req.url.split('?')[0].endsWith('/')) {
+      res.writeHead(302, { location: req.url.split('?')[0] + '/' })
+      return res.end()
+    }
+    if (existsSync(path.join(file, 'index.html'))) return servePage(req, res, base, path.posix.join(rel, 'index.html'), prefix)
+    const items = (await fs.readdir(file, { withFileTypes: true }))
+      .filter((d) => !d.name.startsWith('.'))
+      .sort((a, b) => (b.isDirectory() - a.isDirectory()) || b.name.localeCompare(a.name))
+    const esc = (x) => x.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+    const rows = items.map((d) => `<li><a href="${encodeURIComponent(d.name)}${d.isDirectory() ? '/' : ''}">${esc(d.name)}${d.isDirectory() ? '/' : ''}</a></li>`).join('')
+    return send(res, 200, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<style>body{font:16px system-ui;background:#1d2419;color:#e8eee2;padding:20px}a{color:#9fd18b;line-height:2}</style>
+<h2>${esc(path.basename(file))}</h2><ul>${rows || '<li>Empty</li>'}</ul>`, 'text/html; charset=utf-8')
+  }
+  const type = TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream'
+  // Videos need byte ranges, or phones (Safari especially) refuse to play them.
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '')
+  if (range) {
+    let start = range[1] ? Number(range[1]) : st.size - Number(range[2])
+    let end = range[1] && range[2] ? Number(range[2]) : st.size - 1
+    if (!range[1] && !range[2]) { start = 0; end = st.size - 1 }
+    if (start >= st.size || start < 0 || end < start) {
+      res.writeHead(416, { 'content-range': `bytes */${st.size}` })
+      return res.end()
+    }
+    end = Math.min(end, st.size - 1)
+    res.writeHead(206, { 'content-type': type, 'content-range': `bytes ${start}-${end}/${st.size}`,
+      'accept-ranges': 'bytes', 'content-length': end - start + 1, 'cache-control': 'no-store' })
+    return createReadStream(file, { start, end }).pipe(res)
+  }
+  res.writeHead(200, { 'content-type': type, 'content-length': st.size, 'accept-ranges': 'bytes', 'cache-control': 'no-store' })
+  createReadStream(file).pipe(res)
 }
 
 /** Ready-made prompts a repo offers in its .colony/prompts.json: [{ label, prompt }]. */
@@ -255,7 +435,8 @@ function knownRepo(p) {
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
+  '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png',
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.mp4': 'video/mp4', '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
 }
 
 function send(res, code, body, type = 'application/json') {
@@ -365,35 +546,35 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && p === '/api/tasks') {
       const body = await readJson(req)
-      const repo = knownRepo(body.repo)
-      if (!repo) return send(res, 400, { error: 'Unknown repo' })
-      if (!existsSync(repo.path) && !DEMO) return send(res, 400, { error: `Folder not found: ${repo.path}` })
-      const prompt = String(body.prompt || '').trim()
-      if (!prompt) return send(res, 400, { error: 'Tell the agent what to do' })
-      const toolId = String(body.tool || 'claude-code')
-      const t = tool(toolId)
-      if (!t) return send(res, 400, { error: `Unknown tool: ${toolId}` })
-      const wantWorktree = body.worktree !== false
-      if (DEMO) {
-        const task = startDemoTask({ repo: repo.path, prompt, toolId, worktree: wantWorktree })
-        return send(res, 200, { ok: true, taskId: task.id })
-      }
-      if (!t.available) return send(res, 400, { error: `${t.name} (${t.bin}) was not found on PATH` })
-      let worktree = null
-      let note = ''
-      if (wantWorktree) {
-        try {
-          worktree = await createWorktree(repo.path, prompt)
-          if (!worktree) note = 'Not a git repo, so this agent is working in the folder itself.'
-        } catch (err) {
-          return send(res, 500, { error: `Could not create a worktree: ${String(err.stderr || err.message).trim()}` })
-        }
-      }
-      const task = startTask({
-        toolId, repo: repo.path, cwd: worktree ? worktree.path : repo.path, prompt, worktree,
-        permissionMode: body.permissionMode, allowedTools: state.allowed?.[repo.path] || [],
+      const r = await launchTask({
+        repoPath: body.repo, prompt: body.prompt, toolId: body.tool, permissionMode: body.permissionMode,
+        worktree: body.worktree !== false,
       })
-      return send(res, 200, { ok: true, taskId: task.id, worktree, note })
+      return send(res, r.code || 200, r)
+    }
+
+    if (req.method === 'POST' && (p === '/api/repos/schedule' || p === '/api/repos/schedule/run')) {
+      const body = await readJson(req)
+      const repo = knownRepo(body.repo)
+      const entry = repo?.schedules?.find((x) => x.id === body.id)
+      if (!repo || !entry) return send(res, 400, { error: 'Unknown schedule' })
+      const mine = scheduleState(repo.path, entry.id)
+      if (p.endsWith('/run')) {
+        const r = await runSchedule(repo.path, entry)
+        return send(res, r.code || 200, r)
+      }
+      mine.enabled = !!body.enabled
+      save()
+      await colony()
+      return send(res, 200, { ok: true, enabled: mine.enabled })
+    }
+
+    const pm = /^\/pages\/([0-9a-f]{10})\/(\d+)(\/.*)?$/.exec(p)
+    if (req.method === 'GET' && pm) {
+      const repo = (lastColony?.repos || []).find((r) => repoTag(r.path) === pm[1])
+      const page = repo?.pages?.[Number(pm[2])]
+      if (!page) return send(res, 404, { error: 'not found' })
+      return servePage(req, res, page.dir, decodeURIComponent(pm[3] || '/'), `/pages/${pm[1]}/${pm[2]}`)
     }
 
     const tm = /^\/api\/tasks\/([\w-]+)\/stop$/.exec(p)
@@ -480,7 +661,7 @@ const server = http.createServer(async (req, res) => {
         const task = startTask({
           toolId: t.id, repo: thread.repo, cwd: thread.cwd, prompt, resume: id, permissionMode: body.permissionMode, title: thread.title,
           worktree: thread.worktree ? { path: thread.cwd, branch: thread.branch } : null,
-          allowedTools: state.allowed?.[thread.repo] || [],
+          allowedTools: state.allowed?.[thread.repo] || [], addDirs: state.allowedDirs?.[thread.repo] || [],
         })
         return send(res, 200, { ok: true, taskId: task.id })
       }
@@ -510,6 +691,12 @@ const server = http.createServer(async (req, res) => {
       if (!state.allowed) state.allowed = {}
       if (tools.length) state.allowed[repo.path] = [...new Set(tools)]
       else delete state.allowed[repo.path]
+      // Folders: only ones the repo itself declares can be granted.
+      const declared = await repoDirs(repo.path)
+      const dirs = Array.isArray(body.dirs) ? body.dirs.filter((d) => declared.includes(d)) : []
+      if (!state.allowedDirs) state.allowedDirs = {}
+      if (dirs.length) state.allowedDirs[repo.path] = [...new Set(dirs)]
+      else delete state.allowedDirs[repo.path]
       save()
       await colony()
       return send(res, 200, { ok: true, tools: state.allowed[repo.path] || [] })
@@ -543,6 +730,8 @@ if (!existsSync(THREE)) {
   console.error('three.js is missing — run `npm install` in tools/agent-colony first.')
   process.exit(1)
 }
+
+setInterval(() => { tickSchedules().catch((err) => console.error('schedule:', err.message)) }, 30000)
 
 server.listen(PORT, HOST, () => {
   console.log(`Agent Colony → http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/`)

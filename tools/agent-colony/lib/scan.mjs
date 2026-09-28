@@ -162,6 +162,7 @@ function summarise(records) {
       const text = [...content].reverse().find((c) => c && c.type === 'text' && c.text.trim())
       if (tool) meta.activity = describeTool(tool)
       else if (text) meta.activity = clip(text.text.replace(/\s+/g, ' ').trim(), 110)
+      if (text) meta.lastText = text.text.trim().slice(0, 6000)
       meta.turnEnded = !!last && last.type === 'text' && r.message.stop_reason !== 'tool_use'
       meta.errored = !!r.isApiErrorMessage
       meta.lastRole = 'assistant'
@@ -294,6 +295,7 @@ export async function scanClaude({ viewed = {}, now = Date.now() } = {}) {
         branch: meta.branch,
         model: meta.model,
         activity: meta.activity,
+        reply: meta.lastText || '',
         status,
         live: !!pid,
         startedAt: meta.startedAt || st.birthtimeMs,
