@@ -14,6 +14,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "qrcode-generator": "^1.5.2",
     "three": "^0.170.0"
   }
 }

@@ -25,6 +25,7 @@ import { createWorktree, removeWorktree, worktreeSummary, isColonyWorktree } fro
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const PUBLIC = path.join(ROOT, 'public')
 const THREE = path.join(ROOT, 'node_modules', 'three')
+const QRCODE = path.join(ROOT, 'node_modules', 'qrcode-generator')
 
 const argv = process.argv.slice(2)
 const flag = (name) => argv.includes(`--${name}`)
@@ -33,7 +34,10 @@ const opt = (name, fallback) => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback
 }
 const PORT = Number(opt('port', process.env.PORT || 5274))
-const HOST = opt('host', process.env.HOST || '127.0.0.1')
+// --phone: also answer on the home network, for a phone on the same Wi-Fi (or Tailscale). Anyone
+// there needs the secret key from the link the colony shows, so the network alone isn't enough.
+const PHONE = flag('phone') || process.env.COLONY_PHONE === '1'
+const HOST = opt('host', process.env.HOST || (PHONE ? '0.0.0.0' : '127.0.0.1'))
 let DEMO = flag('demo') || process.env.COLONY_DEMO === '1'
 if (!DEMO && !flag('no-auto-demo') && (await countTranscripts()) === 0) {
   DEMO = true
@@ -280,19 +284,75 @@ async function serveFile(res, base, rel) {
 }
 
 // Only answer our own page: blocks DNS rebinding and other sites posting to localhost.
+let PHONE_KEY = ''
+if (PHONE) {
+  const keyFile = path.join(ROOT, 'data', 'phone-key.txt')
+  try { PHONE_KEY = (await fs.readFile(keyFile, 'utf8')).trim() } catch { /* first time */ }
+  if (!/^[0-9a-f]{32}$/.test(PHONE_KEY)) {
+    PHONE_KEY = crypto.randomBytes(16).toString('hex')
+    await fs.mkdir(path.dirname(keyFile), { recursive: true })
+    await fs.writeFile(keyFile, PHONE_KEY)
+  }
+}
+
+const isLocalHost = (req) => ['localhost', '127.0.0.1', '[::1]'].includes((req.headers.host || '').replace(/:\d+$/, ''))
+
+function hasPhoneKey(req) {
+  if (!PHONE) return false
+  const m = /(?:^|;\s*)colony_key=([0-9a-f]{32})/.exec(req.headers.cookie || '')
+  return !!m && crypto.timingSafeEqual(Buffer.from(m[1]), Buffer.from(PHONE_KEY))
+}
+
+// Only our own page may drive this: requests must be addressed to localhost (blocks DNS rebinding),
+// or carry the phone key. Changes also need a custom header, which other sites can't send.
 function allowed(req) {
-  const host = (req.headers.host || '').replace(/:\d+$/, '')
-  const local = ['localhost', '127.0.0.1', '[::1]'].includes(host) || host === HOST
-  if (!local) return false
+  if (!isLocalHost(req) && !hasPhoneKey(req)) return false
   if (req.method !== 'GET' && req.headers['x-colony'] !== '1') return false
   return true
 }
 
+/** Addresses a phone can use to reach this computer: home network first, then Tailscale. */
+function phoneUrls() {
+  const urls = []
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list || []) {
+      if (a.family !== 'IPv4' && a.family !== 4) continue
+      if (a.internal) continue
+      const kind = /^100\./.test(a.address) ? 'Tailscale (works away from home)' : 'Home Wi-Fi'
+      urls.push({ kind, url: `http://${a.address}:${PORT}/?key=${PHONE_KEY}` })
+    }
+  }
+  return urls.sort((x, y) => (x.kind > y.kind ? 1 : -1))
+}
+
 const server = http.createServer(async (req, res) => {
   try {
-    if (!allowed(req)) return send(res, 403, { error: 'forbidden' })
     const url = new URL(req.url, 'http://local')
     const p = url.pathname
+    // Arriving from the phone link: swap the key in the address for a cookie, then load the page.
+    const key = url.searchParams.get('key')
+    if (PHONE && key && req.method === 'GET' && key.length === 32 &&
+        crypto.timingSafeEqual(Buffer.from(key), Buffer.from(PHONE_KEY))) {
+      res.writeHead(302, {
+        location: '/',
+        'set-cookie': `colony_key=${PHONE_KEY}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`,
+        'cache-control': 'no-store',
+      })
+      return res.end()
+    }
+    if (!allowed(req)) {
+      if (req.method === 'GET' && !p.startsWith('/api/')) {
+        return send(res, 403, '<!doctype html><meta name="viewport" content="width=device-width"><body style="font:16px system-ui;padding:24px">' +
+          '<h2>Agent Colony</h2><p>Open the link or QR code from the colony on your computer: ⚙ Settings → <b>Open on your phone</b>.</p>', 'text/html; charset=utf-8')
+      }
+      return send(res, 403, { error: 'forbidden' })
+    }
+
+    if (req.method === 'GET' && p === '/api/phone') {
+      // The link contains the key, so only the computer itself may ask for it.
+      if (!isLocalHost(req)) return send(res, 403, { error: 'forbidden' })
+      return send(res, 200, { enabled: PHONE, urls: PHONE ? phoneUrls() : [] })
+    }
 
     if (req.method === 'GET' && p === '/api/state') return send(res, 200, await colony())
     if (req.method === 'POST' && !lastColony) await colony()
@@ -470,6 +530,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && p.startsWith('/vendor/three/')) return serveFile(res, THREE, p.slice('/vendor/three/'.length))
+    if (req.method === 'GET' && p === '/vendor/qrcode.js') return serveFile(res, QRCODE, 'qrcode.js')
     if (req.method === 'GET' && p.startsWith('/lib/hex.mjs')) return serveFile(res, path.join(ROOT, 'lib'), 'hex.mjs')
     if (req.method === 'GET') return serveFile(res, PUBLIC, p === '/' ? 'index.html' : p.slice(1))
     send(res, 404, { error: 'not found' })
@@ -485,6 +546,7 @@ if (!existsSync(THREE)) {
 
 server.listen(PORT, HOST, () => {
   console.log(`Agent Colony → http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/`)
+  if (PHONE) console.log('Phone access on: open Settings → "Open on your phone" in the colony for the QR code.')
   if (DEMO) console.log('Demo mode: a made-up colony, nothing real is launched.')
   else {
     const found = describeTools(ALLOW_BYPASS).filter((t) => t.available).map((t) => t.name)

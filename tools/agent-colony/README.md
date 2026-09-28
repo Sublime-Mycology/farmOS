@@ -31,6 +31,18 @@ npm start            # http://127.0.0.1:5274/
 Needs Node 20+ and git. To launch agents you also need at least one agent CLI on your `PATH`
 (see [Tools](#tools)).
 
+## On your phone
+
+Start the colony with `node server.mjs --phone` (the Windows desktop shortcut does). Then on the
+computer, open ⚙ **Settings → Open on your phone** and scan the QR code with your phone's camera.
+The phone must be on the same Wi-Fi. The first time, Windows may ask whether Node.js can use the
+network: tick **Private networks** and click **Allow**.
+
+The link carries a secret key (kept in `data/phone-key.txt`), and the colony answers nobody without
+it. Delete that file and restart to issue a new key, which cuts off every phone that had the old one.
+Away from home, install [Tailscale](https://tailscale.com/download) on both the computer and the
+phone, signed in to the same account. A *Tailscale* link then appears under the Wi-Fi one.
+
 ## Adding a repo
 
 A plot appears for every repo that has Claude Code sessions. To add one that doesn't have any yet

@@ -144,6 +144,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .chip { background: rgba(255, 255, 255, 0.07); border: 1px solid var(--line); border-radius: 99px; padding: 5px 11px; font-size: 12px; cursor: pointer; }
 .chip:hover { background: rgba(255, 255, 255, 0.14); }
+.phone-link { margin: 8px 0; }
+.phone-link .qr { background: #fff; border-radius: 8px; padding: 6px; width: 170px; margin: 6px 0; }
+.phone-link .qr svg { display: block; width: 100%; height: auto; }
+.phone-link input { width: 100%; font-size: 11px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px; }
 .tool-tag { display: inline-block; font-size: 10.5px; padding: 1px 6px; border-radius: 99px; background: rgba(255, 255, 255, 0.08); color: var(--text); margin-right: 2px; }
 .card .wt { margin-top: 4px; }
 
@@ -202,5 +206,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   #panel { left: 10px; right: 10px; top: auto; height: 42vh; width: auto; bottom: 10px; }
   #toolbar { top: 14px; transform: none; flex-direction: row; left: 10px; }
   .pop { left: 10px; top: 64px; transform: none; }
-  .card { width: min(300px, calc(100vw - 20px)); }
+  .card { width: calc(100vw - 20px); }
 }
+.pop { max-height: calc(100vh - 40px); overflow-y: auto; }
+@media (max-width: 760px) { .pop { max-height: calc(100vh - 80px); width: calc(100vw - 20px); } }

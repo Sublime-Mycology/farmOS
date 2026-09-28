@@ -16,6 +16,13 @@ export function ago(ms) {
   return `${Math.round(s / 86400)}d ago`
 }
 
+/** Replace a list's contents only when they changed, so a tap never lands mid-redraw. */
+function setList(list, html) {
+  if (list.dataset.html === html) return
+  list.dataset.html = html
+  list.innerHTML = html
+}
+
 const ICON = {
   chat: '<svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M9 12h6M12 9v6"/></svg>',
   folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
@@ -74,6 +81,7 @@ export class Hud {
     if (act === 'home') return this.app.home()
     if (act === 'settings') {
       $('#settings').classList.toggle('hidden')
+      if (!$('#settings').classList.contains('hidden')) this.showPhone()
       btn.classList.toggle('on', !$('#settings').classList.contains('hidden'))
       return
     }
@@ -81,6 +89,53 @@ export class Hud {
     if (act === 'labels') this.app.showAllLabels = !this.app.showAllLabels
     if (act === 'spin') this.app.spin = !this.app.spin
     btn.classList.toggle('on', act === 'follow' ? this.app.follow : act === 'labels' ? this.app.showAllLabels : this.app.spin)
+  }
+
+  /** The phone link and its QR code (only the computer itself is given the link). */
+  async showPhone() {
+    const el = $('#set-phone')
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)
+    if (!local) {
+      el.textContent = "You're on your phone already. Add this page to your home screen for one-tap access."
+      return
+    }
+    let info
+    try {
+      info = await fetch('/api/phone').then((r) => r.json())
+    } catch {
+      el.textContent = 'Could not ask the colony.'
+      return
+    }
+    if (!info.enabled) {
+      el.innerHTML = 'Phone access is off. Start the colony from the <b>Agent Colony</b> desktop shortcut (or with <code>--phone</code>).'
+      return
+    }
+    if (!info.urls.length) {
+      el.textContent = 'This computer is not on a network your phone can reach.'
+      return
+    }
+    el.innerHTML = info.urls.map((u, i) => `<div class="phone-link"><b>${esc(u.kind)}</b><div class="qr" data-qr="${i}"></div>
+      <input readonly value="${esc(u.url)}" onclick="this.select()"></div>`).join('') +
+      '<p>Scan with your phone camera (phone on the same Wi-Fi). The link contains a secret key, so only share it with your own devices.</p>'
+    try {
+      if (!window.qrcode) {
+        await new Promise((ok, fail) => {
+          const s = document.createElement('script')
+          s.src = '/vendor/qrcode.js'
+          s.onload = ok
+          s.onerror = fail
+          document.head.appendChild(s)
+        })
+      }
+      info.urls.forEach((u, i) => {
+        const qr = window.qrcode(0, 'M')
+        qr.addData(u.url)
+        qr.make()
+        el.querySelector(`[data-qr="${i}"]`).innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true })
+      })
+    } catch {
+      el.querySelectorAll('.qr').forEach((q) => { q.textContent = '(no QR code: run the updater, or type the link instead)' })
+    }
   }
 
   toast(html, ms = 4000) {
@@ -258,23 +313,29 @@ export class Hud {
     if (this.view === 'all') {
       const banner = this.body.querySelector('[data-part="banner"]')
       banner.innerHTML = this.state.demo ? '<div class="banner">Demo colony — nothing here is real. Start the server without <code>--demo</code> to see your own Claude Code threads.</div>' : ''
-      list.innerHTML = this.state.repos.map((r) => {
+      setList(list, this.state.repos.map((r) => {
         const c = (s) => r.threads.filter((t) => t.status === s).length
         const mini = ['error', 'waiting', 'running'].filter((s) => c(s)).map((s) => `<span class="${s}">${c(s)} ${s === 'running' ? 'working' : s === 'error' ? 'stuck' : 'waiting'}</span>`).join('')
         return `<li data-repo="${esc(r.key)}"><span class="dot" style="background:${r.color}"></span><span class="title">${esc(r.name)}</span><span class="mini">${mini}</span><span class="n">${r.threads.length}</span></li>`
-      }).join('') || '<li class="muted">No threads yet.</li>'
-      list.querySelectorAll('li[data-repo]').forEach((li) => li.addEventListener('click', () => this.app.selectRepo(li.dataset.repo)))
+      }).join('') || '<li class="muted">No threads yet.</li>')
+      list.onclick = (e) => {
+        const li = e.target.closest('li[data-repo]')
+        if (li) this.app.selectRepo(li.dataset.repo)
+      }
       return
     }
     const repo = this.state.repos.find((r) => r.key === this.view)
     if (!repo) return
     this.body.querySelector('[data-part="count"]').textContent = `${repo.threads.length} thread${repo.threads.length === 1 ? '' : 's'}`
     this.renderPerms(repo)
-    list.innerHTML = repo.threads.map((t) => `
+    setList(list, repo.threads.map((t) => `
       <li data-thread="${esc(t.id)}" class="${this.app.selection.thread === t.id ? 'sel' : ''}" title="${esc(t.title)}">
         <span class="dot ${t.status}"></span><span class="title">${esc(t.title)}</span><span class="when">${ago(t.updatedAt)}</span>
-      </li>`).join('')
-    list.querySelectorAll('li[data-thread]').forEach((li) => li.addEventListener('click', () => this.app.selectThread(li.dataset.thread)))
+      </li>`).join(''))
+    list.onclick = (e) => {
+      const li = e.target.closest('li[data-thread]')
+      if (li) this.app.selectThread(li.dataset.thread)
+    }
   }
 
   /** Commands agents launched here may run without asking. Suggested by the repo, granted by you. */
@@ -450,7 +511,11 @@ export class Hud {
     const rightLimit = w > 760 ? panel.left - 12 : w - 10
 
     const sel = this.app.selection.thread && world.bots.get(this.app.selection.thread)
-    if (sel && !this.card.classList.contains('hidden')) {
+    if (sel && !this.card.classList.contains('hidden') && w <= 760) {
+      // Phones: dock the card under the toolbar, clear of the panel at the bottom.
+      const top = Math.round($('#toolbar').getBoundingClientRect().bottom + 8)
+      this.card.style.transform = `translate(10px, ${top}px)`
+    } else if (sel && !this.card.classList.contains('hidden')) {
       this.v.copy(sel.group.position).setY(sel.group.position.y + 1.2).project(camera)
       const sx = (this.v.x * 0.5 + 0.5) * w
       const sy = (-this.v.y * 0.5 + 0.5) * h
