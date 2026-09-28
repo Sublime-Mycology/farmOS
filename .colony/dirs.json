@@ -1,0 +1,3 @@
+[
+  { "env": "CLIP_FACTORY_HOME", "default": "~/ClipFactory" }
+]
