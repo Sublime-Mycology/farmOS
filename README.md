@@ -118,6 +118,45 @@ Encoding a 9-minute long clip took about 2 minutes on a modest 4-core machine. S
 The workflows the agent follows (clip a video, inbox rounds, redo from review, channels) are
 spelled out in `CLAUDE.md`.
 
+## Autopilot and the head manager
+
+The **manager agent** (`/manage`) runs the operation:
+- checks every channel;
+- unsticks clipping agents;
+- reviews new clips against a written checklist, looking at stills of each one;
+- sends weak clips back;
+- starts new clips from your creators' uploads;
+- schedules approved clips into publish slots;
+- writes a short report.
+
+**/checkin** writes a daily or weekly summary.
+
+What the manager may do alone is set per channel, in `~/ClipFactory/channels/<ch>.json`:
+
+```json
+"autopilot": {
+  "approve": false,          // may the manager approve clips that pass its checklist?
+  "upload": false,           // may it schedule approved clips on YouTube?
+  "privacy": "public",       // what they become at their publish time
+  "slots": ["12:00", "18:00"],
+  "holdHours": 12,           // never schedule sooner than this, so you can veto in YouTube Studio
+  "maxClipsPerDay": 4,
+  "maxUploadsPerRun": 6
+}
+```
+
+Everything starts **off**. Turn things on as you come to trust it, or ask any agent:
+*"/channel turn on auto-approve for grow-clips"*. Even with everything on:
+- a clip goes public no sooner than `holdHours` after it's scheduled;
+- only approved clips are uploaded;
+- the manager never changes rights, creators or these settings.
+
+In Agent Colony, the clip-factory plot has an **Autopilot schedule** with a morning and evening
+manager shift and a Monday check-in. Tick the ones you want. They run while the colony is running,
+and the Windows installer starts it when you log in. Tap the manager's bot and choose
+**Read full reply** for its report. **Review clips** and **Reports** open the clip pages and
+saved reports, on your phone too.
+
 ## Posting to YouTube
 
 One-time setup per computer (a Google Cloud project with the YouTube API), then one sign-in per

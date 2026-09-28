@@ -192,6 +192,16 @@ $lines = @(
   'pause'
 )
 Set-Content -Path $launcher -Value $lines -Encoding ASCII
+# Start the colony (minimized, no browser) whenever you log in, so scheduled manager shifts run
+# without anyone opening it. Delete "Agent Colony (autostart).cmd" from the Startup folder to stop.
+$startup = [Environment]::GetFolderPath('Startup')
+if ($startup) {
+  Set-Content -Path (Join-Path $startup 'Agent Colony (autostart).cmd') -Encoding ASCII -Value @(
+    '@echo off',
+    "start `"Agent Colony`" /min cmd /c `"cd /d `"$Colony`" && node server.mjs --phone`""
+  )
+  Note 'The colony will also start by itself (minimized) when you log in.'
+}
 # And one to update everything later: it just runs this installer again.
 $updater = Join-Path $desktop 'Update Clip Factory.cmd'
 Set-Content -Path $updater -Encoding ASCII -Value @(

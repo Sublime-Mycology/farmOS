@@ -345,6 +345,8 @@ def check_rights(ch: dict, uploader: str, uploader_id: str, override: bool, chan
             f"of where their OK came from, or pass --i-have-rights for a one-off you are sure about.")
     if rights == "own" and creator_entries(ch) and not creator:
         die(f"'{uploader}' is not one of this channel's own accounts (allowedCreators).")
+    if rights == "own":
+        return {**(creator or {"handle": uploader_id or uploader}), "permission": (creator or {}).get("permission") or "own footage"}
     return creator or {"handle": uploader_id or uploader}
 
 
@@ -531,6 +533,7 @@ def cmd_import(a):
         "id": vid, "url": a.url or "", "title": a.title or src.stem, "uploader": a.uploader or ch.get("title", ""),
         "uploaderUrl": "", "duration": probe_duration(dest), "license": "", "channel": ch["name"],
         "fetched": dt.datetime.now().isoformat(timespec="seconds"), "local": True,
+        "permission": "own footage (imported)" if ch.get("rights") == "own" else "",
     })
     print(f"{vid}  {a.title or src.stem}  ({len(words)} words of transcript)")
 

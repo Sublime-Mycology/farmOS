@@ -288,3 +288,9 @@ class Autopilot(unittest.TestCase):
             self.assertTrue(st["publishAt"].endswith("Z"))
         finally:
             clipper.CHANNELS_DIR, clipper.REVIEW, clipper.youtube_service, clipper.upload_one = saved
+
+
+class OwnRights(unittest.TestCase):
+    def test_own_channels_record_own_footage(self):
+        got = clipper.check_rights({"name": "x", "rights": "own"}, "Me", "@me", False)
+        self.assertEqual(got["permission"], "own footage")

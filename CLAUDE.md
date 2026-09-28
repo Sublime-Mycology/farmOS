@@ -133,7 +133,10 @@ and daily or weekly check-ins. Do it in this order, for every channel in `./clip
 3. **Review pending clips.** For each one, run `./clipper frames --clip <id>` and **look at the stills**,
    then read its title, hook, why and description (`./clipper queue --channel <ch> --status pending`,
    and the JSON next to the clip). Approve only if **every** item holds:
-   - The creator is in the channel's allowed creators, and the clip's permission note isn't empty.
+   - Rights, by the channel's `rights`:
+     - `permission`: the creator is in allowed creators, and the clip's permission note isn't empty.
+     - `own`: the source is the user's own footage (an import, or one of the channel's own accounts).
+     - `licensed`: the clip's permission note shows a Creative Commons license.
    - The length is within the format's limits, and the clip starts on the hook and ends on the payoff.
    - The captions are readable and not covering a face, and the speaker is in frame.
    - The title and hook are specific, not misleading, not clickbait-lies, and spelled right.
