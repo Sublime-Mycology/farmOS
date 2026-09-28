@@ -1,0 +1,23 @@
+[
+  {
+    "id": "manager-daily",
+    "label": "Manager shift",
+    "prompt": "/manage",
+    "days": "daily",
+    "at": "09:00"
+  },
+  {
+    "id": "manager-evening",
+    "label": "Evening manager shift",
+    "prompt": "/manage",
+    "days": "daily",
+    "at": "17:00"
+  },
+  {
+    "id": "weekly-checkin",
+    "label": "Weekly check-in",
+    "prompt": "/checkin 7",
+    "days": "mon",
+    "at": "08:30"
+  }
+]

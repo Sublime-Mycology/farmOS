@@ -233,3 +233,58 @@ class Upload(unittest.TestCase):
             self.assertEqual(len(sent), 1)
         finally:
             clipper.REVIEW, clipper.CHANNELS_DIR, clipper.youtube_service, clipper.upload_one = saved
+
+
+class Autopilot(unittest.TestCase):
+    def test_slots_respect_hold_and_skip_taken(self):
+        import datetime as dt
+        now = dt.datetime(2031, 5, 1, 10, 0).astimezone().astimezone(dt.timezone.utc)
+        pol = {**clipper.DEFAULT_AUTOPILOT, "slots": ["12:00", "18:00"], "holdHours": 4}
+        taken = [dt.datetime(2031, 5, 1, 18, 0).astimezone().astimezone(dt.timezone.utc)]
+        got = [t.astimezone().strftime("%d %H:%M") for t in clipper.next_slots(pol, taken, now, 3)]
+        # 12:00 today is within the 4 h hold, 18:00 today is taken
+        self.assertEqual(got, ["02 12:00", "02 18:00", "03 12:00"])
+
+    def _channel(self, home, autopilot):
+        clipper.CHANNELS_DIR, clipper.REVIEW = home / "channels", home / "review"
+        clipper.CHANNELS_DIR.mkdir(parents=True, exist_ok=True)
+        (clipper.CHANNELS_DIR / "ch.json").write_text(json.dumps({"title": "C", "rights": "own", "autopilot": autopilot}), encoding="utf-8")
+        d = clipper.REVIEW / "ch"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "a.json").write_text(json.dumps({"id": "a", "status": "pending", "channel": "ch", "file": "a.mp4", "title": "T",
+            "description": "D", "tags": [], "format": "short", "duration": 20, "layout": "fit",
+            "source": {"url": "", "title": "", "uploader": "", "start": 0, "end": 20}, "created": "2026-01-01T00:00:00"}), encoding="utf-8")
+        return d
+
+    def test_manager_can_only_approve_when_allowed(self):
+        saved = (clipper.CHANNELS_DIR, clipper.REVIEW)
+        try:
+            d = self._channel(Path(tempfile.mkdtemp()), {"approve": False})
+            with self.assertRaises(SystemExit):
+                clipper.set_status("a", "approved", by="manager")
+            clipper.set_status("a", "approved")  # the user always can
+            d = self._channel(Path(tempfile.mkdtemp()), {"approve": True})
+            clipper.set_status("a", "approved", by="manager", note="passes checklist")
+            self.assertEqual(json.loads((d / "a.json").read_text(encoding="utf-8"))["approvedBy"], "manager")
+        finally:
+            clipper.CHANNELS_DIR, clipper.REVIEW = saved
+
+    def test_auto_upload_needs_permission_and_uses_slots(self):
+        import argparse
+        saved = (clipper.CHANNELS_DIR, clipper.REVIEW, clipper.youtube_service, clipper.upload_one)
+        try:
+            ns = dict(clips=[], approved=False, channel="ch", privacy="private", at=None, every=None, auto=True)
+            d = self._channel(Path(tempfile.mkdtemp()), {"upload": False})
+            with self.assertRaises(SystemExit):
+                clipper.cmd_upload(argparse.Namespace(**ns))
+            d = self._channel(Path(tempfile.mkdtemp()), {"upload": True, "privacy": "public", "slots": ["18:00"], "holdHours": 1})
+            clipper.set_status("a", "approved")
+            bodies = []
+            clipper.youtube_service = lambda ch, interactive=False: "svc"
+            clipper.upload_one = lambda svc, path, body, thumb: (bodies.append(body) or ("VID", ""))
+            clipper.cmd_upload(argparse.Namespace(**ns))
+            st = bodies[0]["status"]
+            self.assertEqual(st["privacyStatus"], "private")  # waits privately until its slot
+            self.assertTrue(st["publishAt"].endswith("Z"))
+        finally:
+            clipper.CHANNELS_DIR, clipper.REVIEW, clipper.youtube_service, clipper.upload_one = saved

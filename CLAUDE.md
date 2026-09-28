@@ -20,6 +20,8 @@ points at a workflow below.
 | `/redo [channel]` | C |
 | `/channel <request in plain words>` | D |
 | `/upload [channel] [privacy] [schedule]` | E |
+| `/manage [channel]` | F. Manager shift |
+| `/checkin [days]` | G. Check-in report |
 
 ## Which workflow
 
@@ -119,9 +121,52 @@ points at a workflow below.
 4. Until Google approves the project's audit, YouTube keeps API uploads private whatever you ask
    for. Mention it if the user expected public videos.
 
+## F. Manager shift (`/manage`)
+
+You are the head manager. You run the operation for the user, who only wants occasional approvals
+and daily or weekly check-ins. Do it in this order, for every channel in `./clipper status`.
+
+1. **Look.** `./clipper status` shows the clips and today's count, and `./clipper agents` shows the running clipping agents.
+2. **Unstick agents.** An agent `error`, or `running` with no activity for over 45 minutes, is stuck.
+   Nudge it once with a concrete instruction (`./clipper nudge <id> "…"`). If it's hopeless, note it
+   in the report and dispatch the video again later.
+3. **Review pending clips.** For each one, run `./clipper frames --clip <id>` and **look at the stills**,
+   then read its title, hook, why and description (`./clipper queue --channel <ch> --status pending`,
+   and the JSON next to the clip). Approve only if **every** item holds:
+   - The creator is in the channel's allowed creators, and the clip's permission note isn't empty.
+   - The length is within the format's limits, and the clip starts on the hook and ends on the payoff.
+   - The captions are readable and not covering a face, and the speaker is in frame.
+   - The title and hook are specific, not misleading, not clickbait-lies, and spelled right.
+   - There's no sponsor read, no stitched-together meaning, and nothing that needs context the clip doesn't have.
+   - It matches what `./clipper feedback` says the user likes.
+
+   If the channel's `autopilot.approve` is **on**: `./clipper approve <id> --by manager --note "why"`.
+   If it's **off**: don't approve; list it in the report as waiting for the user. Either way,
+   `./clipper reject <id> --reason "specific fix"` anything that fails the checklist.
+4. **Redo.** For rejected clips worth saving, run `./clipper recut` yourself if the fix is small.
+   Otherwise note it for `/redo`.
+5. **Find new work.** If today's started count is under `maxClipsPerDay`, run the inbox
+   (`./clipper inbox --channel <ch>`), skip what doesn't fit, and `./clipper dispatch` the best up to the limit.
+6. **Publish.** If `autopilot.upload` is on and YouTube is connected, run `./clipper upload --auto --channel <ch>`.
+   It schedules approved clips into the channel's slots, at least `holdHours` ahead, so the user
+   can still veto in YouTube Studio. If it's off or not connected, list that under "Needs you".
+7. **Report.** Finish with `./clipper report --days 1 --save`, and add a few lines of your own on top:
+   what you decided and why, what's stuck, and what needs the user. Keep it short: it's read on a phone.
+
+You never change a channel's autopilot settings, rights or creators. Only the user does that.
+
+## G. Check-in (`/checkin`)
+
+`./clipper report --days <N> --save` (default 1; 7 for the weekly one), then a short summary on
+top: the headline numbers, the best clip of the period and why, what's working according to the
+feedback, and anything that needs the user.
+
 ## Rules
 
-- Upload only when the user asks in this conversation, and only clips they approved. Never approve your own clips.
+- Upload only when the user asks, or during a manager shift on a channel whose `autopilot.upload` is on.
+  Only approved clips can be uploaded.
+- Never approve a clip you made yourself in the same task. Only a manager shift approves, and
+  only on channels whose `autopilot.approve` is on.
 - Only clip creators the channel says we have permission for. If unsure, stop and ask.
 - Every description credits the original video (automatic). Don't remove it.
 - Don't cut anything that misrepresents what someone said, and don't stitch halves of sentences into a new meaning.

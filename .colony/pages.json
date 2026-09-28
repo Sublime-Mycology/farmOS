@@ -1,0 +1,14 @@
+[
+  {
+    "label": "Review clips",
+    "env": "CLIP_FACTORY_HOME",
+    "default": "~/ClipFactory",
+    "sub": "review"
+  },
+  {
+    "label": "Reports",
+    "env": "CLIP_FACTORY_HOME",
+    "default": "~/ClipFactory",
+    "sub": "reports"
+  }
+]

@@ -1,7 +1,30 @@
 [
-  { "label": "Clip a video", "prompt": "/clip PASTE-YOUTUBE-LINK both" },
-  { "label": "Check for new videos", "prompt": "/rounds" },
-  { "label": "Redo rejected clips", "prompt": "/redo" },
-  { "label": "Upload approved clips", "prompt": "/upload private" },
-  { "label": "New channel or creator", "prompt": "/channel Make a channel called NAME about TOPIC that clips @HANDLE (they said yes via HOW, on DATE)" }
+  {
+    "label": "Manager shift",
+    "prompt": "/manage"
+  },
+  {
+    "label": "Check-in report",
+    "prompt": "/checkin 1"
+  },
+  {
+    "label": "Clip a video",
+    "prompt": "/clip PASTE-YOUTUBE-LINK both"
+  },
+  {
+    "label": "Check for new videos",
+    "prompt": "/rounds"
+  },
+  {
+    "label": "Redo rejected clips",
+    "prompt": "/redo"
+  },
+  {
+    "label": "Upload approved clips",
+    "prompt": "/upload private"
+  },
+  {
+    "label": "New channel or creator",
+    "prompt": "/channel Make a channel called NAME about TOPIC that clips @HANDLE (they said yes via HOW, on DATE)"
+  }
 ]

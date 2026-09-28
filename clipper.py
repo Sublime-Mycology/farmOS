@@ -20,6 +20,10 @@ this does the downloading, cutting, reframing, captioning and bookkeeping.
     clipper queue [--channel NAME] [--status pending]
     clipper recut CLIP_ID [--start S --end S --title ...]   redo a clip with changes
     clipper dispatch URL --channel NAME [--format both] hand a video to a new agent in Agent Colony
+    clipper status                                   one-screen overview of every channel (for the manager)
+    clipper report [--days 1] [--save]               what happened lately, as a check-in report
+    clipper agents / clipper nudge THREAD "message"  see and prod the clipping agents running in Agent Colony
+    clipper upload --auto --channel NAME             schedule approved clips into the channel's publish slots
     clipper connect --channel NAME                   sign in to the YouTube channel it posts to (once)
     clipper upload CLIP_ID... | --approved --channel NAME [--privacy private] [--at "2026-10-01 18:00" --every 24h]
     clipper approve CLIP_ID [--note "..."] / clipper reject CLIP_ID --reason "..."
@@ -1311,6 +1315,16 @@ def upload_one(svc, path: Path, body: dict, thumb: Path | None) -> tuple[str, st
 
 def cmd_upload(a):
     from googleapiclient.errors import HttpError  # noqa: F401  (fails early with a clear message if missing)
+    auto_slots = None
+    a.auto = getattr(a, "auto", False)
+    if a.auto:
+        if not a.channel:
+            die("--auto needs --channel")
+        policy = autopilot(load_channel(a.channel))
+        if not policy["upload"]:
+            die(f"autopilot.upload is off for '{a.channel}'. Only the user can turn it on (the channel's autopilot settings).")
+        a.approved, a.privacy, a.at = True, policy["privacy"], None
+        a.every = None
     if a.approved:
         if not a.channel:
             die("--approved needs --channel")
@@ -1327,6 +1341,12 @@ def cmd_upload(a):
         if m.get("status") != "approved":
             die(f"{m['id']} is '{m.get('status')}'. Only clips you approved can be uploaded "
                 f"(clipper approve {m['id']}).")
+    if a.auto:
+        policy = autopilot(load_channel(a.channel))
+        todo = todo[: int(policy["maxUploadsPerRun"])]
+        auto_slots = next_slots(policy, scheduled_times(a.channel), dt.datetime.now(dt.timezone.utc), len(todo))
+        if len(auto_slots) < len(todo):
+            todo = todo[: len(auto_slots)]
     when = parse_when(a.at) if a.at else None
     step = parse_every(a.every) if a.every else dt.timedelta(hours=24)
     if when and when < dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=15):
@@ -1336,7 +1356,7 @@ def cmd_upload(a):
         ch = load_channel(m["channel"])
         if m["channel"] not in services:
             services[m["channel"]] = youtube_service(m["channel"])
-        publish_at = when + step * i if when else None
+        publish_at = auto_slots[i] if auto_slots else (when + step * i if when else None)
         body = video_body(m, ch, a.privacy, publish_at)
         video = REVIEW / m["channel"] / m["file"]
         thumb = REVIEW / m["channel"] / m["thumbnail"] if m.get("thumbnail") else None
@@ -1362,13 +1382,211 @@ def cmd_upload(a):
     print("Manage them in YouTube Studio: https://studio.youtube.com")
 
 
-def set_status(clip_id: str, status: str, reason: str = "", note: str = ""):
+# ---------------------------------------------------------------------------------------------
+# Autopilot: what the manager agent may do on its own, per channel. Everything is off until you
+# switch it on in the channel's "autopilot" settings.
+
+DEFAULT_AUTOPILOT = {
+    "approve": False,          # manager may approve clips that pass its checklist
+    "upload": False,           # manager may schedule approved clips on YouTube
+    "privacy": "public",       # what scheduled clips become at their publish time
+    "slots": ["12:00", "18:00"],  # daily publish times (local)
+    "holdHours": 12,           # never schedule sooner than this, so you can veto in YouTube Studio
+    "maxClipsPerDay": 4,       # videos the manager may start clipping per day
+    "maxUploadsPerRun": 6,     # YouTube allows about 6 uploads a day per Google project
+}
+
+
+def autopilot(ch: dict) -> dict:
+    return {**DEFAULT_AUTOPILOT, **(ch.get("autopilot") or {})}
+
+
+def next_slots(policy: dict, taken: list[dt.datetime], now: dt.datetime, n: int) -> list[dt.datetime]:
+    """The next n free publish times: at the channel's daily slots, at least holdHours from now,
+    and not within 30 minutes of something already scheduled."""
+    earliest = now + dt.timedelta(hours=float(policy.get("holdHours", 12)))
+    times = []
+    for hm in policy.get("slots") or ["18:00"]:
+        h, m = (int(x) for x in str(hm).split(":")[:2])
+        times.append((h, m))
+    times.sort()
+    out, used = [], list(taken)
+    local_now = now.astimezone()
+    for day in range(0, 60):
+        date = (local_now + dt.timedelta(days=day)).date()
+        for h, m in times:
+            t = dt.datetime(date.year, date.month, date.day, h, m).astimezone().astimezone(dt.timezone.utc)
+            if t < earliest or any(abs((t - u).total_seconds()) < 1800 for u in used):
+                continue
+            out.append(t)
+            used.append(t)
+            if len(out) == n:
+                return out
+    return out
+
+
+def scheduled_times(channel: str) -> list[dt.datetime]:
+    out = []
+    for _, m in all_clips(channel):
+        at = (m.get("youtube") or {}).get("publishAt")
+        if at:
+            try:
+                out.append(dt.datetime.fromisoformat(at.replace("Z", "+00:00")))
+            except ValueError:
+                pass
+    return out
+
+
+def my_channels() -> list[str]:
+    return sorted(p.stem for p in CHANNELS_DIR.glob("*.json"))
+
+
+def today_str() -> str:
+    return dt.date.today().isoformat()
+
+
+def channel_status(name: str) -> dict:
+    ch = load_channel(name)
+    clips = [m for _, m in all_clips(name)]
+    now = dt.datetime.now(dt.timezone.utc)
+    by = lambda st: [m for m in clips if m.get("status") == st]  # noqa: E731
+    upcoming, live = [], []
+    for m in by("uploaded"):
+        at = (m.get("youtube") or {}).get("publishAt")
+        if at and dt.datetime.fromisoformat(at.replace("Z", "+00:00")) > now:
+            upcoming.append(m)
+        else:
+            live.append(m)
+    inbox = read_json(inbox_file(name)) if inbox_file(name).exists() else {}
+    started_today = sum(1 for v in inbox.values() if v.get("status") in ("dispatched", "fetched") and
+                        str(v.get("at", "")).startswith(today_str()))
+    connected = token_path(name).exists() and bool(ch.get("youtube", {}).get("channelId"))
+    return {
+        "channel": name, "title": ch.get("title", name), "rights": ch.get("rights"),
+        "creators": len(creator_entries(ch)), "autopilot": autopilot(ch), "youtubeConnected": connected,
+        "pending": len(by("pending")), "approved": len(by("approved")), "rejected": len(by("rejected")),
+        "scheduled": len(upcoming), "published": len(live), "startedToday": started_today,
+        "rejectedNotRedone": len([m for m in by("rejected") if not m.get("replacedBy")]),
+        "nextPublish": min(((m["youtube"]["publishAt"]) for m in upcoming), default=""),
+    }
+
+
+def cmd_status(a):
+    names = [a.channel] if a.channel else my_channels()
+    if not names:
+        print("No channels yet: clipper new-channel")
+        return
+    rows = [channel_status(n) for n in names]
+    if a.json:
+        print(json.dumps(rows, indent=2))
+        return
+    for r in rows:
+        ap = r["autopilot"]
+        print(f"\n## {r['channel']} ({r['title']})")
+        print(f"  clips: {r['pending']} to review, {r['approved']} approved (not uploaded), "
+              f"{r['scheduled']} scheduled, {r['published']} uploaded/live, {r['rejectedNotRedone']} rejected to redo")
+        print(f"  today: {r['startedToday']} of {ap['maxClipsPerDay']} videos started")
+        print(f"  autopilot: approve={'on' if ap['approve'] else 'off'}, upload={'on' if ap['upload'] else 'off'}, "
+              f"slots {', '.join(ap['slots'])}, hold {ap['holdHours']}h")
+        print(f"  youtube: {'connected' if r['youtubeConnected'] else 'NOT connected (the user must run: clipper connect --channel ' + r['channel'] + ')'}"
+              + (f"; next goes public {r['nextPublish']}" if r["nextPublish"] else ""))
+        print(f"  creators with permission: {r['creators']}")
+
+
+def cmd_report(a):
+    since = dt.datetime.now() - dt.timedelta(days=a.days)
+    names = [a.channel] if a.channel else my_channels()
+    lines = [f"# Clip Factory report: last {a.days} day{'s' if a.days != 1 else ''} (to {dt.datetime.now():%a %d %b %H:%M})", ""]
+    needs_you = []
+    for name in names:
+        st = channel_status(name)
+        recent = []
+        for _, m in all_clips(name):
+            stamp = m.get("reviewed") or m.get("created")
+            if stamp and dt.datetime.fromisoformat(stamp) >= since:
+                recent.append(m)
+        made = [m for m in recent if dt.datetime.fromisoformat(m["created"]) >= since]
+        lines.append(f"## {name}")
+        lines.append(f"- New clips: {len(made)} · waiting for review: {st['pending']} · approved, not uploaded: {st['approved']}"
+                     f" · scheduled: {st['scheduled']} · uploaded: {st['published']}")
+        for m in sorted(recent, key=lambda m: m.get("reviewed") or m["created"]):
+            who = f" by {m['approvedBy']}" if m.get("approvedBy") else ""
+            link = f" {m['youtube']['url']}" if m.get("youtube") else ""
+            when = ""
+            if (m.get("youtube") or {}).get("publishAt"):
+                when = " (public at " + dt.datetime.fromisoformat(m["youtube"]["publishAt"].replace("Z", "+00:00")).astimezone().strftime("%a %d %b %H:%M") + ")"
+            reason = f" · {m.get('reason') or m.get('note')}" if (m.get("reason") or m.get("note")) else ""
+            lines.append(f"  - {m['status']}{who}: {m['title']} [{m.get('format', '')} {fmt_time(m['duration'])}]{link}{when}{reason}")
+        if not st["youtubeConnected"] and (st["approved"] or st["autopilot"]["upload"]):
+            needs_you.append(f"{name}: connect YouTube (clipper connect --channel {name})")
+        if st["pending"] and not st["autopilot"]["approve"]:
+            needs_you.append(f"{name}: {st['pending']} clip(s) waiting for your review")
+        if st["creators"] == 0 and st["rights"] == "permission":
+            needs_you.append(f"{name}: no creators with permission yet")
+        lines.append("")
+    lines.append("## Needs you")
+    lines += [f"- {x}" for x in needs_you] or ["- Nothing right now."]
+    text = "\n".join(lines)
+    print(text)
+    if a.save:
+        out = HOME / "reports" / f"{dt.datetime.now():%Y-%m-%d-%H%M}.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text + "\n", encoding="utf-8")
+        print(f"\n(saved to {out})")
+
+
+def colony_request(method: str, path: str, body: dict | None = None):
+    import urllib.error
+    import urllib.request
+    colony = os.environ.get("CLIP_COLONY_URL", "http://127.0.0.1:5274").rstrip("/")
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"x-colony": "1", "content-type": "application/json"} if method != "GET" else {}
+    req = urllib.request.Request(colony + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as err:
+        die(f"Agent Colony refused: {json.loads(err.read() or b'{}').get('error', err.reason)}")
+    except (urllib.error.URLError, OSError):
+        die(f"Agent Colony isn't running at {colony}.")
+
+
+def same_dir(a: str, b: str) -> bool:
+    na, nb = os.path.normcase(os.path.normpath(a)), os.path.normcase(os.path.normpath(b))
+    return na == nb
+
+
+def cmd_agents(a):
+    state = colony_request("GET", "/api/state")
+    repo = next((r for r in state.get("repos", []) if same_dir(r["path"], str(main_repo()))), None)
+    if not repo:
+        print("No Clip Factory agents in the colony right now.")
+        return
+    now = state.get("now", 0) / 1000
+    print(f"{len(repo['threads'])} clip-factory threads:")
+    for t in repo["threads"]:
+        idle = (now - t["updatedAt"] / 1000) / 60 if now else 0
+        print(f"  {t['status']:8} {idle:6.0f} min ago  {t['id']}  {t['title'][:70]}")
+        if t.get("activity"):
+            print(f"           last: {t['activity'][:120]}")
+
+
+def cmd_nudge(a):
+    res = colony_request("POST", f"/api/threads/{a.thread}/reply", {"prompt": a.message, "permissionMode": "acceptEdits"})
+    print("nudged: " + ("the agent is back at work" if res.get("ok") else json.dumps(res)))
+
+
+def set_status(clip_id: str, status: str, reason: str = "", note: str = "", by: str = ""):
     p, m = find_clip(clip_id)
+    if by == "manager" and status == "approved" and not autopilot(load_channel(m["channel"]))["approve"]:
+        die(f"autopilot.approve is off for '{m['channel']}': only the user can approve its clips. List it in your report instead.")
     m["status"] = status
     if reason:
         m["reason"] = reason
     if note:
         m["note"] = note
+    if by and status == "approved":
+        m["approvedBy"] = by
     m["reviewed"] = dt.datetime.now().isoformat(timespec="seconds")
     write_json(p, m)
     write_review_page(m["channel"])
@@ -1569,7 +1787,27 @@ def main():
     up.add_argument("--privacy", choices=["private", "unlisted", "public"], default="private")
     up.add_argument("--at", help="schedule: first one goes public at this local time, e.g. \"2026-10-01 18:00\"")
     up.add_argument("--every", help="with --at: space the rest out, e.g. 24h (default) or 12h")
+    up.add_argument("--auto", action="store_true", help="autopilot: schedule approved clips into the channel's publish slots")
     up.set_defaults(fn=cmd_upload)
+
+    stp = sub.add_parser("status", help="overview of every channel: clips, schedule, autopilot, YouTube")
+    stp.add_argument("--channel")
+    stp.add_argument("--json", action="store_true")
+    stp.set_defaults(fn=cmd_status)
+
+    rp = sub.add_parser("report", help="check-in report of what happened lately")
+    rp.add_argument("--channel")
+    rp.add_argument("--days", type=int, default=1)
+    rp.add_argument("--save", action="store_true", help="also save it to ~/ClipFactory/reports")
+    rp.set_defaults(fn=cmd_report)
+
+    ag = sub.add_parser("agents", help="clipping agents in Agent Colony and what they're doing")
+    ag.set_defaults(fn=cmd_agents)
+
+    ng = sub.add_parser("nudge", help="send a stuck or finished agent a follow-up instruction")
+    ng.add_argument("thread")
+    ng.add_argument("message")
+    ng.set_defaults(fn=cmd_nudge)
 
     fb = sub.add_parser("feedback", help="what the reviewer approved and rejected, and why")
     fb.add_argument("--channel", required=True)
@@ -1584,7 +1822,8 @@ def main():
     ap = sub.add_parser("approve")
     ap.add_argument("clip")
     ap.add_argument("--note", default="", help="what was good about it (the agent learns from this)")
-    ap.set_defaults(fn=lambda a: set_status(a.clip, "approved", note=a.note))
+    ap.add_argument("--by", default="", help="who approved: leave empty for the user; the manager agent passes 'manager'")
+    ap.set_defaults(fn=lambda a: set_status(a.clip, "approved", note=a.note, by=a.by))
     rj = sub.add_parser("reject")
     rj.add_argument("clip")
     rj.add_argument("--reason", default="", help="what was wrong (the agent learns from this)")

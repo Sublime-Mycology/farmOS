@@ -52,5 +52,17 @@
   },
   "credit": "🎥 Full video: {title} by {uploader}\n{url}",
   "hashtags": [],
-  "tags": []
+  "tags": [],
+  "autopilot": {
+    "approve": false,
+    "upload": false,
+    "privacy": "public",
+    "slots": [
+      "12:00",
+      "18:00"
+    ],
+    "holdHours": 12,
+    "maxClipsPerDay": 4,
+    "maxUploadsPerRun": 6
+  }
 }
