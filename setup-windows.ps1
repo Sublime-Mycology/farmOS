@@ -188,7 +188,7 @@ $lines = @(
   "cd /d `"$Colony`"",
   'echo Agent Colony is running. Keep this window open; close it to stop.',
   'start "" cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:5274/"',
-  'node server.mjs',
+  'node server.mjs --phone',
   'pause'
 )
 Set-Content -Path $launcher -Value $lines -Encoding ASCII
