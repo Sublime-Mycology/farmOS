@@ -1,23 +1,19 @@
 [
   {
-    "id": "manager-daily",
+    "id": "manager-shift",
     "label": "Manager shift",
     "prompt": "/manage",
-    "days": "daily",
-    "at": "09:00"
+    "every": "2h",
+    "from": "07:00",
+    "to": "23:00",
+    "defaultOn": true
   },
   {
-    "id": "manager-evening",
-    "label": "Evening manager shift",
-    "prompt": "/manage",
-    "days": "daily",
-    "at": "17:00"
-  },
-  {
-    "id": "weekly-checkin",
+    "id": "checkin-weekly",
     "label": "Weekly check-in",
     "prompt": "/checkin 7",
     "days": "mon",
-    "at": "08:30"
+    "at": "08:30",
+    "defaultOn": true
   }
 ]

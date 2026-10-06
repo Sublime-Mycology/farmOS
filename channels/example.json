@@ -62,7 +62,7 @@
       "18:00"
     ],
     "holdHours": 12,
-    "maxClipsPerDay": 4,
+    "maxClipsPerDay": 6,
     "maxUploadsPerRun": 6
   }
 }

@@ -83,8 +83,10 @@ points at a workflow below.
    fetched, clipped or skipped yet.
 2. For each new video, judge from the title and length whether it's worth clipping for this channel.
    - Worth it: `./clipper dispatch <url> --channel <ch> [--format short|long|both]` starts a separate
-     agent for that video in Agent Colony, each in its own worktree, all working in parallel. Dispatch
-     at most 3 per round unless the user said otherwise. If the colony isn't running, clip one yourself (workflow A).
+     agent for that video in Agent Colony, each in its own worktree, all working in parallel. Up to
+     **6 clipping agents** work at once (`./clipper agents` shows how many are busy), and dispatch
+     refuses when all 6 are. Fill the free ones, best videos first; leave the rest for the next round.
+     If the colony isn't running, clip one yourself (workflow A).
    - Not worth it: `./clipper skip <video-id> --channel <ch> --reason "…"` so it stops showing up.
 3. Report what you clipped, what you skipped, and what's left.
 
@@ -148,8 +150,10 @@ and daily or weekly check-ins. Do it in this order, for every channel in `./clip
    `./clipper reject <id> --reason "specific fix"` anything that fails the checklist.
 4. **Redo.** For rejected clips worth saving, run `./clipper recut` yourself if the fix is small.
    Otherwise note it for `/redo`.
-5. **Find new work.** If today's started count is under `maxClipsPerDay`, run the inbox
-   (`./clipper inbox --channel <ch>`), skip what doesn't fit, and `./clipper dispatch` the best up to the limit.
+5. **Find new work.** Keep the 6 clipping agents busy. If today's started count is under `maxClipsPerDay`
+   and `./clipper agents` shows fewer than 6 working, run the inbox (`./clipper inbox --channel <ch>`),
+   skip what doesn't fit, and `./clipper dispatch` the best until all 6 are busy or the day's limit is
+   reached. Shifts run every 2 hours, so a quiet shift is fine: keep its report to a few lines.
 6. **Publish.** If `autopilot.upload` is on and YouTube is connected, run `./clipper upload --auto --channel <ch>`.
    It schedules approved clips into the channel's slots, at least `holdHours` ahead, so the user
    can still veto in YouTube Studio. If it's off or not connected, list that under "Needs you".

@@ -818,11 +818,28 @@ def main_repo() -> Path:
     return ROOT
 
 
+# How many clipping agents may work at once, across all channels (each is one video).
+MAX_AGENTS = int(os.environ.get("CLIP_MAX_AGENTS", "6"))
+
+
+def clip_agents(state: dict) -> list[dict]:
+    """The clipping agents (/clip runs) working right now in this repo's plot."""
+    repo = next((r for r in state.get("repos", []) if same_dir(r["path"], str(main_repo()))), None)
+    return [t for t in (repo or {}).get("threads", [])
+            if t.get("status") == "running" and str(t.get("title", "")).lstrip().startswith("/clip")]
+
+
 def cmd_dispatch(a):
     """Ask Agent Colony to start a new clipping agent for one video (it gets its own worktree)."""
     import urllib.error
     import urllib.request
     load_channel(a.channel)
+    try:
+        busy = len(clip_agents(colony_request("GET", "/api/state", quiet=True)))
+    except Exception:  # noqa: BLE001 - the colony not running is reported below
+        busy = 0
+    if busy >= MAX_AGENTS:
+        die(f"all {MAX_AGENTS} clipping agents are busy ({busy} working). Leave this video for the next round.")
     colony = os.environ.get("CLIP_COLONY_URL", "http://127.0.0.1:5274").rstrip("/")
     prompt = f"/clip {a.url} {a.channel} {a.format}" + (f" {a.note}" if a.note else "")
     body = json.dumps({"repo": str(main_repo()), "prompt": prompt, "tool": "claude-code",
@@ -840,7 +857,8 @@ def cmd_dispatch(a):
     m = re.search(r"(?:v=|youtu\.be/|shorts/|live/)([\w-]{11})", a.url)
     if m:
         mark_inbox(a.channel, m.group(1), "dispatched")
-    print(f"dispatched: a new agent is clipping {a.url} for {a.channel}" + (f" (branch {wt})" if wt else ""))
+    print(f"dispatched: a new agent is clipping {a.url} for {a.channel}" + (f" (branch {wt})" if wt else "")
+          + f". {busy + 1} of {MAX_AGENTS} clipping agents now working.")
 
 
 def cmd_skip(a):
@@ -1395,7 +1413,7 @@ DEFAULT_AUTOPILOT = {
     "privacy": "public",       # what scheduled clips become at their publish time
     "slots": ["12:00", "18:00"],  # daily publish times (local)
     "holdHours": 12,           # never schedule sooner than this, so you can veto in YouTube Studio
-    "maxClipsPerDay": 4,       # videos the manager may start clipping per day
+    "maxClipsPerDay": 6,       # videos the manager may start clipping per day
     "maxUploadsPerRun": 6,     # YouTube allows about 6 uploads a day per Google project
 }
 
@@ -1538,7 +1556,7 @@ def cmd_report(a):
         print(f"\n(saved to {out})")
 
 
-def colony_request(method: str, path: str, body: dict | None = None):
+def colony_request(method: str, path: str, body: dict | None = None, quiet: bool = False):
     import urllib.error
     import urllib.request
     colony = os.environ.get("CLIP_COLONY_URL", "http://127.0.0.1:5274").rstrip("/")
@@ -1551,6 +1569,8 @@ def colony_request(method: str, path: str, body: dict | None = None):
     except urllib.error.HTTPError as err:
         die(f"Agent Colony refused: {json.loads(err.read() or b'{}').get('error', err.reason)}")
     except (urllib.error.URLError, OSError):
+        if quiet:
+            raise
         die(f"Agent Colony isn't running at {colony}.")
 
 
@@ -1566,7 +1586,7 @@ def cmd_agents(a):
         print("No Clip Factory agents in the colony right now.")
         return
     now = state.get("now", 0) / 1000
-    print(f"{len(repo['threads'])} clip-factory threads:")
+    print(f"{len(clip_agents(state))} of {MAX_AGENTS} clipping agents working. {len(repo['threads'])} clip-factory threads:")
     for t in repo["threads"]:
         idle = (now - t["updatedAt"] / 1000) / 60 if now else 0
         print(f"  {t['status']:8} {idle:6.0f} min ago  {t['id']}  {t['title'][:70]}")

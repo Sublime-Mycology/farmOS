@@ -294,3 +294,27 @@ class OwnRights(unittest.TestCase):
     def test_own_channels_record_own_footage(self):
         got = clipper.check_rights({"name": "x", "rights": "own"}, "Me", "@me", False)
         self.assertEqual(got["permission"], "own footage")
+
+
+class AgentCap(unittest.TestCase):
+    def state(self, running):
+        repo = str(clipper.main_repo())
+        threads = [{"status": "running", "title": f"/clip https://youtu.be/v{i} ch both"} for i in range(running)]
+        threads += [{"status": "running", "title": "/manage"}, {"status": "waiting", "title": "/clip done one"}]
+        return {"repos": [{"path": repo, "threads": threads}]}
+
+    def test_counts_only_working_clip_agents(self):
+        self.assertEqual(len(clipper.clip_agents(self.state(4))), 4)
+        self.assertEqual(clipper.clip_agents({"repos": []}), [])
+
+    def test_dispatch_refuses_when_all_six_are_busy(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        args = SimpleNamespace(channel="c", url="https://youtu.be/abcdefghijk", format="both", note="")
+        with mock.patch.object(clipper, "load_channel", return_value={}), \
+                mock.patch.object(clipper, "colony_request", return_value=self.state(clipper.MAX_AGENTS)), \
+                mock.patch("urllib.request.urlopen") as post:
+            with self.assertRaises(SystemExit):
+                clipper.cmd_dispatch(args)
+            post.assert_not_called()
+        self.assertEqual(clipper.MAX_AGENTS, 6)

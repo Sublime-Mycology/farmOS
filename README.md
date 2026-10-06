@@ -140,7 +140,7 @@ What the manager may do alone is set per channel, in `~/ClipFactory/channels/<ch
   "privacy": "public",       // what they become at their publish time
   "slots": ["12:00", "18:00"],
   "holdHours": 12,           // never schedule sooner than this, so you can veto in YouTube Studio
-  "maxClipsPerDay": 4,
+  "maxClipsPerDay": 6,
   "maxUploadsPerRun": 6
 }
 ```
@@ -151,8 +151,11 @@ Everything starts **off**. Turn things on as you come to trust it, or ask any ag
 - only approved clips are uploaded;
 - the manager never changes rights, creators or these settings.
 
-In Agent Colony, the clip-factory plot has an **Autopilot schedule** with a morning and evening
-manager shift and a Monday check-in. Tick the ones you want. They run while the colony is running,
+Up to **6 clipping agents** work at once, each on its own video (`CLIP_MAX_AGENTS` changes it).
+
+In Agent Colony, the clip-factory plot has an **Autopilot schedule**: a manager shift every 2 hours
+from 7 am to 11 pm (on from the start; untick it to stop) and a Monday check-in. Agent Colony's
+foreman also watches every agent, and restarts or sends on any that stall. They run while the colony is running,
 and the Windows installer starts it when you log in. Tap the manager's bot and choose
 **Read full reply** for its report. **Review clips** and **Reports** open the clip pages and
 saved reports, on your phone too.
@@ -187,11 +190,7 @@ the rights. What keeps a clips channel safe:
 
 ## Not built yet
 
-1. **Upload**: YouTube Data API, one Google sign-in per channel. It would upload only `approved`
-   clips, as private or scheduled first, with the thumbnail and chapters.
-2. **Watch creators**: check each channel's allowed creators for new uploads and start agents
-   automatically.
-3. **Learn from results**: pull views and retention per clip back in, per channel and format.
+- **Learn from results**: pull views and retention per clip back in, per channel and format.
 
 ## Files
 
