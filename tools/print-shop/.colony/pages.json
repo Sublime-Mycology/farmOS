@@ -1,0 +1,4 @@
+[
+  { "label": "Review designs", "env": "PRINT_SHOP_HOME", "default": "~/PrintShop", "sub": "designs" },
+  { "label": "Shop reports", "env": "PRINT_SHOP_HOME", "default": "~/PrintShop", "sub": "reports" }
+]

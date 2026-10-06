@@ -1,0 +1,4 @@
+[
+  { "id": "shop-manager", "label": "Manager shift", "prompt": "/manage", "every": "3h", "from": "08:00", "to": "22:00" },
+  { "id": "shop-checkin-weekly", "label": "Weekly check-in", "prompt": "/checkin 7", "days": "mon", "at": "08:40" }
+]

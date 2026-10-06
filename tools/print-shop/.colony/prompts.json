@@ -1,0 +1,9 @@
+[
+  { "label": "Manager shift", "prompt": "/manage" },
+  { "label": "New ideas", "prompt": "/ideas" },
+  { "label": "Design an idea", "prompt": "/design PASTE-IDEA-ID-OR-DESCRIBE-THE-DESIGN" },
+  { "label": "Redo rejected", "prompt": "/redo" },
+  { "label": "Put approved on Printify", "prompt": "/list" },
+  { "label": "Check-in report", "prompt": "/checkin 1" },
+  { "label": "New brand", "prompt": "/brand Make a brand called NAME selling tees, stickers and mugs, about TOPIC, for AUDIENCE" }
+]

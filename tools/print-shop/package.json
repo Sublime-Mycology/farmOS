@@ -1,0 +1,15 @@
+{
+  "name": "print-shop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Print-on-demand merch run by agents: SVG designs, print files, mockups, review, Printify.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}
