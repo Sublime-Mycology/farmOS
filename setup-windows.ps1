@@ -24,6 +24,8 @@ $Code      = Join-Path $HOME 'code'
 $ColonySrc = Join-Path $Code 'agent-colony'
 $Colony    = Join-Path $ColonySrc 'tools\agent-colony'
 $Clip      = Join-Path $Code 'clip-factory'
+$Shop      = Join-Path $Code 'print-shop'
+$ShopSrc   = Join-Path $ColonySrc 'tools\print-shop'
 $Media     = Join-Path $HOME 'ClipFactory'
 $VenvPy    = Join-Path $Media '.venv\Scripts\python.exe'
 $Quiet     = [bool]$env:COLONY_SETUP_QUIET
@@ -153,6 +155,23 @@ Run $VenvPy (Join-Path $Clip 'clipper.py') doctor
 Step 'Adding Clip Factory to the colony'
 Run 'node' (Join-Path $Colony 'scripts\add-repo.mjs') $Clip --allow
 
+# Print Shop ships inside Agent Colony. It gets its own folder and local git repo, so each design
+# agent can work in its own worktree; updates are copied in and committed here.
+Step 'Setting up Print Shop (print-on-demand merch)'
+$shopNew = -not (Test-Path (Join-Path $Shop '.git'))
+New-Item -ItemType Directory -Force -Path $Shop | Out-Null
+Copy-Item -Path (Join-Path $ShopSrc '*') -Destination $Shop -Recurse -Force
+if ($shopNew) { Run 'git' -C $Shop init --quiet }
+$shopChanges = & git -C $Shop status --porcelain
+if ($shopChanges) {
+  Run 'git' -C $Shop add -A
+  Run 'git' -C $Shop -c user.name='Print Shop' -c user.email='print-shop@localhost' commit --quiet -m 'Update from Agent Colony'
+}
+Push-Location $Shop
+try { Run 'npm.cmd' install --no-audit --no-fund --loglevel=error --update-notifier=false } finally { Pop-Location }
+Run 'node' (Join-Path $Shop 'printshop.mjs') doctor
+Run 'node' (Join-Path $Colony 'scripts\add-repo.mjs') $Shop --allow
+
 # 4. First channel ------------------------------------------------------------------------------
 $channels = @(Get-ChildItem -Path (Join-Path $Media 'channels') -Filter '*.json' -ErrorAction SilentlyContinue)
 if ($channels.Count -eq 0 -and $Quiet) {
@@ -223,6 +242,7 @@ Write-Host '      Make shorts and one long clip from https://youtu.be/VIDEO_ID f
 Write-Host '  * To add a creator who said yes: tell any agent there, e.g.'
 Write-Host '      Add @CreatorHandle to YOUR-CHANNEL, they allowed clipping via their clip program'
 Write-Host "  * Finished clips to review: $Media\review"
+Write-Host '  * Merch: click print-shop in the right panel and press "New brand" to start a shop.'
 } finally {
   try { Stop-Transcript | Out-Null } catch { }
 }
