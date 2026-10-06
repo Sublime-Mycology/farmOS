@@ -72,6 +72,11 @@ export class Hud {
       this.toast('Archived threads are back.')
       app.refreshSoon()
     })
+    $('#set-watchdog').addEventListener('change', async (e) => {
+      await fetch('/api/settings/watchdog', { method: 'POST', headers: { 'content-type': 'application/json', 'x-colony': '1' },
+        body: JSON.stringify({ enabled: e.target.checked }) })
+      this.toast(e.target.checked ? 'Watchdog on: hung or crashed agents get restarted.' : 'Watchdog off.')
+    })
     setTimeout(() => app.setShadows?.(settings.shadows))
     $('#toolbar [data-act="follow"]').classList.toggle('on', app.follow)
   }
@@ -149,6 +154,7 @@ export class Hud {
   /** New data from the server. */
   update(state) {
     this.state = state
+    if (document.activeElement !== $('#set-watchdog')) $('#set-watchdog').checked = state.watchdog !== false
     const all = state.repos.flatMap((r) => r.threads)
     const n = (s) => all.filter((t) => t.status === s).length
     $('#counts').innerHTML = `
@@ -349,10 +355,9 @@ export class Hud {
     if (!el || el.dataset.sig === sig) return
     el.dataset.sig = sig
     if (!list.length) { el.innerHTML = ''; return }
-    const when = (x) => `${x.days === 'daily' ? 'Daily' : x.days === 'weekdays' ? 'Weekdays' : x.days.split(/[\s,]+/).map((d) => d[0].toUpperCase() + d.slice(1)).join(', ')} ${x.at}`
     el.innerHTML = `<div class="section-title">Autopilot schedule</div><ul class="list sched">${list.map((x) => `
       <li><label class="check"><input type="checkbox" data-sched="${esc(x.id)}" ${x.enabled ? 'checked' : ''}></label>
-        <span class="title" title="${esc(x.prompt)}">${esc(x.label)}<br><small class="muted">${esc(when(x))}${x.lastRun ? ` · last ${ago(x.lastRun)}` : ''}</small></span>
+        <span class="title" title="${esc(x.prompt)}">${esc(x.label)}<br><small class="muted">${esc(x.when)}${x.lastRun ? ` · last ran ${ago(x.lastRun)}` : ''}${x.lastResult === 'nothing needed' ? ' · all quiet' : ''}</small></span>
         <button class="btn small" data-run="${esc(x.id)}">Run now</button></li>`).join('')}</ul>
       <p class="muted" style="font-size:11px;margin:4px">Runs while the colony is open on your computer.</p>`
     el.querySelectorAll('[data-sched]').forEach((cb) => cb.addEventListener('change', async () => {
@@ -402,7 +407,7 @@ export class Hud {
       this.cardFor = null
       return
     }
-    const sig = JSON.stringify([t.id, t.status, t.title, t.activity, t.pct, t.errands.length, Math.floor(t.updatedAt / 30000), (t.reply || '').length, this.replyOpen === t.id])
+    const sig = JSON.stringify([t.id, t.status, t.title, t.activity, t.pct, t.errands.length, Math.floor(t.updatedAt / 30000), (t.reply || '').length, t.foremanNote, this.replyOpen === t.id])
     if (!force && sig === this.cardSig) return
     if (sig === this.cardSig && this.cardFor === id) return
     const keepReply = this.cardFor === id ? this.card.querySelector('.reply input')?.value || '' : ''
@@ -427,6 +432,7 @@ export class Hud {
         ${t.worktree ? `<div class="wt" data-part="wt">Own worktree <b>${esc(t.worktree)}</b></div>` : ''}
       </div>
       ${t.activity ? `<div class="activity">${esc(t.activity)}</div>` : ''}
+      ${t.foremanNote ? `<div class="foreman-note${t.needsUser ? ' needs' : ''}">${esc(t.foremanNote)}</div>` : ''}
       ${t.reply && t.reply.length > 100 ? `<button class="back" data-act="full">${this.replyOpen === t.id ? 'Hide full reply' : 'Read full reply'}</button>
         ${this.replyOpen === t.id ? `<div class="reply-full">${esc(t.reply)}</div>` : ''}` : ''}
       ${t.errands.length ? `<div class="errands">${t.errands.length} subagent${t.errands.length > 1 ? 's' : ''} out on errands</div>` : ''}

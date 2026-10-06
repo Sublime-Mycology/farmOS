@@ -188,6 +188,11 @@ a.btn { text-decoration: none; color: inherit; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: #c9cfdd; word-break: break-word;
   max-height: 64px; overflow: hidden;
 }
+.card .foreman-note {
+  margin-top: 6px; padding: 6px 9px; border-radius: 9px; font-size: 12px;
+  background: rgba(107, 207, 91, 0.12); border-left: 3px solid #6bcf5b; word-break: break-word;
+}
+.card .foreman-note.needs { background: rgba(242, 201, 76, 0.14); border-left-color: #f2c94c; }
 .card .errands { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
 .card .reply { display: flex; gap: 6px; margin-top: 8px; }
 .card .reply input {

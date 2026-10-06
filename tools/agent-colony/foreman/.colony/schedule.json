@@ -1,0 +1,18 @@
+[
+  {
+    "id": "foreman-rounds",
+    "label": "Foreman rounds (only when an agent needs it)",
+    "prompt": "/foreman",
+    "every": "1h",
+    "onlyIf": "attention",
+    "defaultOn": true
+  },
+  {
+    "id": "foreman-roll-call",
+    "label": "Morning roll call",
+    "prompt": "/foreman roll-call",
+    "at": "08:00",
+    "days": "daily",
+    "defaultOn": true
+  }
+]

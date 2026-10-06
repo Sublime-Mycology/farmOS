@@ -38,11 +38,29 @@ Optional files in a repo's `.colony/` folder:
 | File | What it adds to the repo's plot |
 | --- | --- |
 | `prompts.json` | One-click prompt buttons: `[{ "label", "prompt" }]` |
-| `schedule.json` | Recurring runs, each off until ticked: `[{ "id", "label", "prompt", "at": "09:00", "days": "daily" \| "weekdays" \| "mon,thu" }]`. They run while the colony runs; a time missed earlier that day runs once when it next starts |
+| `schedule.json` | Recurring runs: `[{ "id", "label", "prompt", "at": "09:00", "days": "daily" \| "weekdays" \| "mon,thu" }]`, or on an interval with `"every": "2h", "from": "07:00", "to": "23:00"` instead of `at`. Each is off until ticked, unless it has `"defaultOn": true`. `"onlyIf": "attention"` runs it only when some agent needs the foreman. They run while the colony runs; a time missed earlier that day runs once when it next starts |
 | `pages.json` | Folders to browse from the colony, and from a phone: `[{ "label", "env", "default", "sub" }]` |
 | `dirs.json` | Folders outside the repo its agents need. They're passed as `--add-dir`, and only after you press **Allow** |
 
 Commands a repo's `.claude/settings.json` asks for are granted the same way, with **Allow**.
+
+## The foreman: keeping every agent working
+
+The colony has a general manager, in two layers. Both only touch agents launched from the colony
+(not your own terminal sessions).
+
+- **Watchdog** (no AI, every minute, switch in ⚙ Settings). It stops a run that has printed nothing
+  for 30 minutes. An agent that crashed or was stopped like that is resumed once, with "carry on
+  from where you got to".
+- **Foreman** (an AI agent with its own *foreman* plot, in `~/AgentColony/foreman`). Every hour, but
+  only when some agent has stopped and you haven't looked at it for 10 minutes, it reads that
+  agent's task and last reply. Then it sends it on with a concrete next step, marks it done, or flags
+  it **Needs you** with exactly what to do. It never decides money, sign-ins, publishing, deleting or
+  rights, and it follows up on one agent at most twice a day. Its notes show on each agent's card.
+  A **Morning roll call** at 08:00 sums up every plot.
+
+Both foreman schedules start switched on; untick them on the foreman plot to stop. Its playbook is
+`foreman/CLAUDE.md`, copied to its folder each time the colony starts.
 
 ## On your phone
 
@@ -183,6 +201,9 @@ lib/tools.mjs           tool adapters: how to launch/parse/resume each agent CLI
 lib/agents.mjs          runs tasks (one process per agent), opens terminals
 lib/worktrees.mjs       one git worktree per task; summary; safe removal
 lib/scan.mjs            Claude Code "watch": transcripts → threads with a status
+lib/schedule.mjs        when a repo's scheduled runs are due
+lib/foreman.mjs         the watchdog's and foreman's rules: who needs attention, what's hung
+foreman/                the foreman's folder: playbook, /foreman command, colony.mjs CLI
 lib/hex.mjs             sticky hex-plot layout (shared with the browser)
 lib/demo.mjs            the made-up colony
 public/js/main.js       renderer, camera, picking, sync with the server

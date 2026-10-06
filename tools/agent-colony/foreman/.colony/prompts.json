@@ -1,0 +1,5 @@
+[
+  { "label": "Do rounds now", "prompt": "/foreman" },
+  { "label": "Roll call", "prompt": "/foreman roll-call" },
+  { "label": "What needs me?", "prompt": "Run node colony.mjs agents 72 and list only what needs me, one line each, with exactly what I should do." }
+]

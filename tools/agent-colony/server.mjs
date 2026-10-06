@@ -21,6 +21,10 @@ import {
 } from './lib/agents.mjs'
 import { tool, describeTools } from './lib/tools.mjs'
 import { createWorktree, removeWorktree, worktreeSummary, isColonyWorktree } from './lib/worktrees.mjs'
+import { normalizeSchedule, dueTime, describeSchedule } from './lib/schedule.mjs'
+import {
+  managed, needsAttention, hungTasks, shouldRetry, retryPrompt, recent, MAX_FOREMAN_REPLIES,
+} from './lib/foreman.mjs'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const PUBLIC = path.join(ROOT, 'public')
@@ -55,6 +59,10 @@ let state = { zones: {}, colors: {}, archived: {}, viewed: {}, pinned: [], allow
 try {
   state = { ...state, ...JSON.parse(await fs.readFile(STATE_FILE, 'utf8')) }
 } catch { /* first run */ }
+// Sessions launched from the colony ({ id: { at, origin } }): the only ones the foreman manages.
+state.launched = state.launched || {}
+// What the foreman and watchdog did: notes per thread, and when they replied or retried.
+state.foreman = { flags: {}, replies: {}, retries: {}, ...state.foreman }
 
 let saveTimer = null
 function save() {
@@ -111,6 +119,10 @@ async function buildColony() {
   const tasks = DEMO ? [...demoTasks.values()] : listTasks()
   const byId = new Map(threads.map((t) => [t.id, t]))
   for (const task of tasks) {
+    if (task.sessionId && !DEMO && !state.launched[task.sessionId]) {
+      state.launched[task.sessionId] = { at: task.startedAt, origin: task.origin || 'colony' }
+      save()
+    }
     const thread = task.sessionId && byId.get(task.sessionId)
     if (thread) {
       thread.taskId = task.id
@@ -150,6 +162,18 @@ async function buildColony() {
   // Archive: hidden until the thread does something newer than the moment it was archived.
   const archivedCount = threads.filter((t) => state.archived[t.id] && t.updatedAt <= state.archived[t.id] + 5000).length
   threads = threads.filter((t) => !(state.archived[t.id] && t.updatedAt <= state.archived[t.id] + 5000))
+
+  // What the foreman knows about each thread, shown on its card.
+  const ctx = foremanCtx()
+  for (const t of threads) {
+    t.launched = managed(t, ctx)
+    const flag = state.foreman.flags[t.id]
+    if (flag && flag.at >= t.updatedAt) {
+      t.foremanNote = flag.note
+      t.needsUser = !!flag.needsUser
+    }
+    t.attention = needsAttention(t, ctx, now)
+  }
 
   const repos = new Map()
   // Repos you added by hand get a plot even before anything has run in them.
@@ -195,15 +219,19 @@ async function buildColony() {
       allowedDirs: state.allowedDirs?.[repo] || [],
       suggestedDirs: DEMO ? [] : (await repoDirs(repo)).filter((x) => !(state.allowedDirs?.[repo] || []).includes(x)),
       schedules: DEMO ? [] : (await repoSchedules(repo)).map((x) => {
-        const mine = scheduleState(repo, x.id)
-        return { ...x, enabled: !!mine.enabled, lastRun: mine.lastRun || 0, lastResult: mine.lastResult || '' }
+        const mine = scheduleState(repo, x.id, x.defaultOn)
+        return { ...x, when: describeSchedule(x), enabled: !!mine.enabled, lastRun: mine.lastRun || 0, lastResult: mine.lastResult || '' }
       }),
       pages: DEMO ? [] : await repoPages(repo),
       tag: repoTag(repo),
+      foreman: !!FOREMAN_DIR && samePath(repo, FOREMAN_DIR),
     })
   }
   out.sort((a, b) => a.name.localeCompare(b.name))
-  return { now, demo: DEMO, claude: CLAUDE_VERSION, tools: describeTools(ALLOW_BYPASS || DEMO), archivedCount, repos: out }
+  return {
+    now, demo: DEMO, claude: CLAUDE_VERSION, tools: describeTools(ALLOW_BYPASS || DEMO), archivedCount, repos: out,
+    watchdog: state.watchdog !== false,
+  }
 }
 
 /**
@@ -223,7 +251,7 @@ async function suggestedTools(repo) {
 }
 
 /** Start one agent in a repo: the one path used by the composer, dispatch and the scheduler. */
-async function launchTask({ repoPath, prompt, toolId = 'claude-code', permissionMode = 'acceptEdits', worktree: wantWorktree = true }) {
+async function launchTask({ repoPath, prompt, toolId = 'claude-code', permissionMode = 'acceptEdits', worktree: wantWorktree = true, origin = 'colony' }) {
   const repo = knownRepo(repoPath)
   if (!repo) return { code: 400, error: 'Unknown repo' }
   if (!existsSync(repo.path) && !DEMO) return { code: 400, error: `Folder not found: ${repo.path}` }
@@ -248,7 +276,7 @@ async function launchTask({ repoPath, prompt, toolId = 'claude-code', permission
   }
   const task = startTask({
     toolId: t.id, repo: repo.path, cwd: worktree ? worktree.path : repo.path, prompt, worktree,
-    permissionMode, allowedTools: state.allowed?.[repo.path] || [], addDirs: state.allowedDirs?.[repo.path] || [],
+    permissionMode, allowedTools: state.allowed?.[repo.path] || [], addDirs: state.allowedDirs?.[repo.path] || [], origin,
   })
   return { ok: true, taskId: task.id, worktree, note }
 }
@@ -258,40 +286,23 @@ async function launchTask({ repoPath, prompt, toolId = 'claude-code', permission
 // in the colony, and runs while the colony is running (a missed time runs once when it next starts
 // that day).
 
-const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
-
 async function repoSchedules(repo) {
   try {
     const list = JSON.parse(await fs.readFile(path.join(repo, '.colony', 'schedule.json'), 'utf8'))
-    return (Array.isArray(list) ? list : [])
-      .filter((x) => x && /^[\w-]{1,40}$/.test(x.id || '') && typeof x.prompt === 'string' && /^\d{1,2}:\d{2}$/.test(x.at || ''))
-      .slice(0, 12)
-      .map((x) => ({ id: x.id, label: String(x.label || x.id).slice(0, 40), prompt: x.prompt.slice(0, 2000),
-        at: x.at, days: String(x.days || 'daily').toLowerCase() }))
+    return (Array.isArray(list) ? list : []).map(normalizeSchedule).filter(Boolean).slice(0, 12)
   } catch {
     return []
   }
 }
 
-function scheduleState(repoPath, id) {
+function scheduleState(repoPath, id, defaultOn = false) {
   state.schedules = state.schedules || {}
   state.schedules[repoPath] = state.schedules[repoPath] || {}
-  return (state.schedules[repoPath][id] = state.schedules[repoPath][id] || { enabled: false, lastRun: 0 })
-}
-
-function runsOn(days, date) {
-  const d = DAY_NAMES[date.getDay()]
-  if (days === 'daily') return true
-  if (days === 'weekdays') return d !== 'sat' && d !== 'sun'
-  return days.split(/[\s,]+/).includes(d)
-}
-
-/** The most recent time this schedule should have run, or 0 if not yet today. */
-function dueTime(entry, now = new Date()) {
-  const [h, m] = entry.at.split(':').map(Number)
-  const t = new Date(now)
-  t.setHours(h, m, 0, 0)
-  return runsOn(entry.days, now) && t <= now ? t.getTime() : 0
+  if (!state.schedules[repoPath][id]) {
+    state.schedules[repoPath][id] = { enabled: !!defaultOn, lastRun: 0 }
+    save()
+  }
+  return state.schedules[repoPath][id]
 }
 
 async function runSchedule(repoPath, entry) {
@@ -299,7 +310,7 @@ async function runSchedule(repoPath, entry) {
   const running = mine.taskId && listTasks().some((t) => t.id === mine.taskId && t.alive)
   if (running) return { code: 409, error: 'The last run is still going' }
   mine.lastRun = Date.now()
-  const r = await launchTask({ repoPath, prompt: entry.prompt })
+  const r = await launchTask({ repoPath, prompt: entry.prompt, origin: 'schedule' })
   if (r.ok) mine.taskId = r.taskId
   mine.lastResult = r.ok ? 'started' : r.error
   save()
@@ -307,17 +318,123 @@ async function runSchedule(repoPath, entry) {
 }
 
 async function tickSchedules() {
-  if (DEMO || !lastColony) return
+  if (DEMO) return
+  // Look fresh: with no browser open (say, started at login), nothing else rebuilds the colony.
+  if (!lastColony || Date.now() - lastColony.now > 20000) await colony()
   for (const repo of lastColony.repos) {
     for (const entry of repo.schedules || []) {
       const mine = scheduleState(repo.path, entry.id)
       const due = dueTime(entry)
       if (mine.enabled && due && mine.lastRun < due) {
+        // Rounds that only matter when an agent needs looking at wait (costing nothing) until one
+        // does, at most one run per slot.
+        if (entry.onlyIf === 'attention' && !lastColony.repos.some((r) => r.threads.some((t) => t.attention))) {
+          if (mine.lastResult !== 'nothing needed') {
+            mine.lastResult = 'nothing needed'
+            save()
+          }
+          continue
+        }
         console.log(`schedule: running "${entry.label}" in ${repo.name}`)
         await runSchedule(repo.path, entry)
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The foreman (see lib/foreman.mjs). Its plot is its own folder outside any repo, refreshed from
+// ./foreman on every start, so it shows up on the map with its own schedule and bot.
+
+const FOREMAN_DIR = DEMO ? '' : path.resolve(process.env.COLONY_FOREMAN_DIR || path.join(os.homedir(), 'AgentColony', 'foreman'))
+const FOREMAN_TOOLS = ['Bash(node colony.mjs:*)']
+
+async function setupForeman() {
+  if (!FOREMAN_DIR) return
+  const src = path.join(ROOT, 'foreman')
+  await fs.cp(src, FOREMAN_DIR, { recursive: true, force: true })
+  await fs.writeFile(path.join(FOREMAN_DIR, 'colony-url.txt'), `http://127.0.0.1:${PORT}\n`)
+  state.pinned = [...new Set([...(state.pinned || []), FOREMAN_DIR])]
+  state.allowed = state.allowed || {}
+  state.allowed[FOREMAN_DIR] = [...new Set([...(state.allowed[FOREMAN_DIR] || []), ...FOREMAN_TOOLS])]
+  save()
+}
+
+function foremanCtx() {
+  return { launched: state.launched, flags: state.foreman.flags, retries: state.foreman.retries, foremanDir: FOREMAN_DIR, samePath }
+}
+
+/** Give a stopped thread its next message, in the same session and folder. */
+function continueThread(thread, prompt, { permissionMode = 'acceptEdits', origin = 'colony' } = {}) {
+  const t = tool(thread.tool) || tool('claude-code')
+  if (!t.canResume || !t.available) return { code: 400, error: `${t.name} cannot take follow-ups here` }
+  if (!isSessionId(thread.id)) return { code: 400, error: 'This thread has no session yet' }
+  const task = startTask({
+    toolId: t.id, repo: thread.repo, cwd: thread.cwd, prompt, resume: thread.id, permissionMode, title: thread.title,
+    worktree: thread.worktree ? { path: thread.cwd, branch: thread.branch } : null,
+    allowedTools: state.allowed?.[thread.repo] || [], addDirs: state.allowedDirs?.[thread.repo] || [], origin,
+  })
+  return { ok: true, taskId: task.id }
+}
+
+/** Every minute: stop hung agents, and resume ones that failed (once). Switch off in Settings. */
+async function tickWatchdog() {
+  if (DEMO || state.watchdog === false) return
+  const now = Date.now()
+  for (const task of hungTasks(listTasks(), now)) {
+    console.log(`watchdog: stopping "${task.title}" (no output for 30 minutes)`)
+    if (task.sessionId) state.foreman.hung = { ...state.foreman.hung, [task.sessionId]: now }
+    stopTask(task.id)
+  }
+  const ctx = foremanCtx()
+  for (const repo of (await colony()).repos) {
+    for (const thread of repo.threads) {
+      if (!shouldRetry(thread, ctx, now)) continue
+      const hung = (state.foreman.hung?.[thread.id] || 0) > now - 60 * 60 * 1000
+      const reason = hung ? 'it went 30 minutes without any output, so it was stopped' : 'it ended with an error'
+      state.foreman.retries[thread.id] = [...(state.foreman.retries[thread.id] || []), now].slice(-5)
+      const r = continueThread(thread, retryPrompt(reason), { origin: 'watchdog' })
+      console.log(`watchdog: resuming "${thread.title}" (${reason})${r.ok ? '' : `: ${r.error}`}`)
+      state.foreman.flags[thread.id] = { note: `Watchdog restarted it: ${reason}.`, needsUser: false, at: now }
+      save()
+    }
+  }
+}
+
+/** Forget launch records and notes older than two weeks. */
+function pruneForeman(now = Date.now()) {
+  const old = (t) => now - t > 14 * 24 * 60 * 60 * 1000
+  for (const [id, x] of Object.entries(state.launched)) if (old(x.at)) delete state.launched[id]
+  for (const key of ['flags', 'replies', 'retries', 'hung']) {
+    for (const [id, x] of Object.entries(state.foreman[key] || {})) {
+      const t = Array.isArray(x) ? Math.max(0, ...x) : typeof x === 'number' ? x : x.at
+      if (old(t)) delete state.foreman[key][id]
+    }
+  }
+}
+
+/** One thread as the foreman sees it. */
+function foremanView(t, repo, full = false) {
+  const v = {
+    id: t.id, repo: repo.name, repoPath: repo.path, status: t.status, updatedAt: t.updatedAt,
+    minutesAgo: Math.round((Date.now() - t.updatedAt) / 60000), title: t.title, activity: t.activity || '',
+    managed: !!t.launched, attention: !!t.attention, note: t.foremanNote || '', needsUser: !!t.needsUser,
+    worktree: t.worktree || '', branch: t.branch || '',
+    foremanRepliesToday: recent(state.foreman.replies[t.id], 24 * 60 * 60 * 1000),
+  }
+  if (full) v.reply = t.reply || ''
+  else v.replyEnd = (t.reply || '').slice(-400)
+  return v
+}
+
+async function repoBrief(repoPath) {
+  for (const name of ['CLAUDE.md', 'AGENTS.md', 'README.md']) {
+    try {
+      const text = await fs.readFile(path.join(repoPath, name), 'utf8')
+      return { file: name, text: text.slice(0, 4000) + (text.length > 4000 ? '\n…(cut)' : '') }
+    } catch { /* next */ }
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -428,6 +545,75 @@ const samePath = (a, b) => {
 function knownRepo(p) {
   if (!p) return null
   return (lastColony?.repos || []).find((r) => samePath(r.path, String(p))) || null
+}
+
+// ---------------------------------------------------------------------------------------------
+// The foreman's API, used by foreman/colony.mjs (from the foreman's own plot) and the Settings switch.
+
+async function foremanApi(req, p) {
+  const all = () => (lastColony?.repos || []).flatMap((repo) => repo.threads.map((t) => ({ t, repo })))
+  const url = new URL(req.url, 'http://x')
+  if (req.method === 'POST' && p === '/api/settings/watchdog') {
+    const body = await readJson(req)
+    state.watchdog = !!body.enabled
+    save()
+    return { ok: true, enabled: state.watchdog }
+  }
+  if (req.method === 'GET' && p === '/api/foreman/agents') {
+    await colony()
+    const hours = Math.min(Number(url.searchParams.get('hours')) || 48, 24 * 14)
+    const since = Date.now() - hours * 3600000
+    return {
+      watchdog: state.watchdog !== false,
+      agents: all().filter(({ t, repo }) => !repo.foreman && (t.updatedAt >= since || t.status === 'running'))
+        .map(({ t, repo }) => foremanView(t, repo)),
+    }
+  }
+  const tm = /^\/api\/foreman\/thread\/([\w-]+)$/.exec(p)
+  if (req.method === 'GET' && tm) {
+    await colony()
+    const hit = all().find(({ t }) => t.id === tm[1] || (tm[1].length >= 8 && t.id.startsWith(tm[1])))
+    if (!hit) return { code: 404, error: 'No such agent' }
+    const { t, repo } = hit
+    return {
+      ...foremanView(t, repo, true),
+      task: (t.taskId && getTask(t.taskId)?.prompt) || '',
+      worktreeSummary: t.worktree ? await worktreeSummary(t.repo, t.cwd).catch(() => null) : null,
+      brief: await repoBrief(repo.path),
+    }
+  }
+  if (req.method === 'POST' && (p === '/api/foreman/reply' || p === '/api/foreman/mark')) {
+    const body = await readJson(req)
+    await colony()
+    const hit = all().find(({ t }) => t.id === body.id || (String(body.id || '').length >= 8 && t.id.startsWith(body.id)))
+    if (!hit) return { code: 404, error: 'No such agent' }
+    const { t } = hit
+    if (!t.launched) return { code: 403, error: 'The foreman only manages agents launched from the colony (not your own sessions or scheduled runs)' }
+    const now = Date.now()
+    if (p.endsWith('/mark')) {
+      const note = String(body.note || '').trim().slice(0, 300)
+      if (!note) return { code: 400, error: 'Say why' }
+      state.foreman.flags[t.id] = { note: (body.needsUser ? 'Needs you: ' : 'Foreman: ') + note, needsUser: !!body.needsUser, at: now }
+      // Done ones stop asking for you; ones that need you keep their "?".
+      if (!body.needsUser) state.viewed[t.id] = now
+      save()
+      return { ok: true }
+    }
+    const prompt = String(body.prompt || '').trim()
+    if (!prompt) return { code: 400, error: 'Empty message' }
+    if (t.status === 'running') return { code: 409, error: 'That agent is working right now' }
+    if (recent(state.foreman.replies[t.id], 24 * 60 * 60 * 1000, now) >= MAX_FOREMAN_REPLIES) {
+      return { code: 429, error: `Already followed up ${MAX_FOREMAN_REPLIES} times today. Flag it for the user instead (needs-you).` }
+    }
+    const r = continueThread(t, `Message from the foreman (the colony's manager): ${prompt}`, { origin: 'foreman' })
+    if (!r.ok) return r
+    state.foreman.replies[t.id] = [...(state.foreman.replies[t.id] || []), now].slice(-6)
+    state.foreman.flags[t.id] = { note: `Foreman: ${prompt.slice(0, 200)}`, needsUser: false, at: now }
+    state.viewed[t.id] = now
+    save()
+    return r
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -569,6 +755,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true, enabled: mine.enabled })
     }
 
+    if (p.startsWith('/api/foreman/') || p === '/api/settings/watchdog') {
+      const r = await foremanApi(req, p)
+      if (r) return send(res, r.code || 200, r)
+    }
+
     const pm = /^\/pages\/([0-9a-f]{10})\/(\d+)(\/.*)?$/.exec(p)
     if (req.method === 'GET' && pm) {
       const repo = (lastColony?.repos || []).find((r) => repoTag(r.path) === pm[1])
@@ -655,15 +846,12 @@ const server = http.createServer(async (req, res) => {
           const dt = startDemoTask({ repo: thread.repo, prompt, title: thread.title, worktree: false })
           return send(res, 200, { ok: true, taskId: dt.id })
         }
-        if (!t.canResume || !t.available) return send(res, 400, { error: `${t.name} cannot take follow-ups here` })
-        state.viewed[id] = Date.now()
-        save()
-        const task = startTask({
-          toolId: t.id, repo: thread.repo, cwd: thread.cwd, prompt, resume: id, permissionMode: body.permissionMode, title: thread.title,
-          worktree: thread.worktree ? { path: thread.cwd, branch: thread.branch } : null,
-          allowedTools: state.allowed?.[thread.repo] || [], addDirs: state.allowedDirs?.[thread.repo] || [],
-        })
-        return send(res, 200, { ok: true, taskId: task.id })
+        const r = continueThread(thread, prompt, { permissionMode: body.permissionMode })
+        if (r.ok) {
+          state.viewed[id] = Date.now()
+          save()
+        }
+        return send(res, r.code || 200, r)
       }
     }
 
@@ -731,7 +919,12 @@ if (!existsSync(THREE)) {
   process.exit(1)
 }
 
+await setupForeman().catch((err) => console.error('foreman: could not set up its folder:', err.message))
 setInterval(() => { tickSchedules().catch((err) => console.error('schedule:', err.message)) }, 30000)
+setInterval(() => {
+  pruneForeman()
+  tickWatchdog().catch((err) => console.error('watchdog:', err.message))
+}, 60000)
 
 server.listen(PORT, HOST, () => {
   console.log(`Agent Colony → http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/`)

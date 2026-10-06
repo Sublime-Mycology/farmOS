@@ -29,8 +29,9 @@ function agentEnv() {
  * Start a headless run of `toolId` in `cwd`.
  * `repo` is the repo it belongs to (cwd may be a worktree inside it); `worktree` names that worktree.
  * `resume` continues an existing session, for tools that support it.
+ * `origin` says who started it; the foreman leaves scheduled runs alone.
  */
-export function startTask({ toolId = 'claude-code', repo, cwd, prompt, resume = '', permissionMode = 'acceptEdits', title = '', worktree = null, allowedTools = [], addDirs = [] }) {
+export function startTask({ toolId = 'claude-code', repo, cwd, prompt, resume = '', permissionMode = 'acceptEdits', title = '', worktree = null, allowedTools = [], addDirs = [], origin = 'colony' }) {
   const tool = findTool(toolId)
   if (!tool) throw new Error(`Unknown tool: ${toolId}`)
   if (!tool.permissionModes.includes(permissionMode)) permissionMode = tool.permissionModes[0]
@@ -48,6 +49,7 @@ export function startTask({ toolId = 'claude-code', repo, cwd, prompt, resume = 
     prompt,
     title: title || prompt.replace(/\s+/g, ' ').slice(0, 100),
     sessionId: resume || '',
+    origin,                    // 'colony' (you or an agent), 'schedule', 'watchdog' or 'foreman'
     status: 'running',
     startedAt: Date.now(),
     updatedAt: Date.now(),
