@@ -31,6 +31,9 @@ On the *print-shop* plot, the preset buttons start them:
 | New brand | `/brand …` | Makes a brand: niche, audience, style, products |
 | New ideas | `/ideas` | Adds design ideas to the brand's list |
 | Design an idea | `/design <idea>` | Draws it, renders, checks the mockups, writes the listing |
+| Sketch something cool | `/sketch …` | A design for its own sake, kept in the **sketchbook** (not for sale) |
+| Just ideas | `/sketch 10 ideas only, …` | Ideas without drawings |
+| Turn a design into merch | `/merch <design> hat` | A sketchbook design remade for a hat, shirt, pillow… |
 | Redo rejected | `/redo` | Fixes what you rejected, from your reasons |
 | Put approved on Printify | `/list` | Approved designs become Printify drafts |
 | Manager shift | `/manage` | Reviews, redoes, keeps ideas flowing, lists, reports |
@@ -39,6 +42,16 @@ On the *print-shop* plot, the preset buttons start them:
 Up to 4 design agents work at once (`PRINT_SHOP_MAX_AGENTS`), each in its own worktree. The
 manager shift (every 3 hours) and weekly check-in are on the plot's **Autopilot schedule**, off
 until ticked. Review on **Review designs**, from your phone too.
+
+## What it can make
+
+| Kind | Products | Print |
+| --- | --- | --- |
+| Apparel | `tee`, `hoodie`, `tote` | On the fabric; transparent background |
+| Hats | `hat` | **Embroidered**: 6 thread colours at most, bold and simple (render checks) |
+| Decor | `canvas`, `pillow`, `blanket`, `poster`, `mug` | Edge to edge (render checks it's filled) |
+| Small | `sticker` | Die-cut |
+| Not merch | `art` | Any size, in the sketchbook. `retarget` turns one into a product later |
 
 ## Autopilot
 

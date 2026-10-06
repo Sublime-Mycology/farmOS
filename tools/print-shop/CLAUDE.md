@@ -15,6 +15,8 @@ without asking. Everything you make lives in `~/PrintShop` (brands, designs, rep
 | `/brand <request in plain words>` | D. Brands and products |
 | `/ideas [brand] [how many]` | A. Ideas |
 | `/design <idea-id or idea text> [brand]` | B. Design |
+| `/sketch [idea, theme or "surprise me"] [how many]` | H. Sketchbook (designs that aren't merch) |
+| `/merch <design-id> <product> [brand]` | I. Turn a design into merch |
 | `/redo [brand]` | C. Redo from review |
 | `/list [brand] [live]` | E. List on Printify |
 | `/manage [brand]` | F. Manager shift |
@@ -47,7 +49,9 @@ without asking. Everything you make lives in `~/PrintShop` (brands, designs, rep
    ("Certified Spore Whisperer"), or a clean illustration with a short phrase. Make it clear in
    one glance, from across a room, and specific enough to stand out in search. Avoid generic
    phrases that thousands of shops already sell.
-4. Add each: `node printshop.mjs idea add --brand <b> --text "…" --why "who buys it, and why" --product tee`.
+4. Add each: `node printshop.mjs idea add --brand <b> --text "…" --why "who buys it, and why" --product tee`
+   (or `hat`, `mug`, `pillow`, `canvas`, `blanket`, `poster`, `sticker`, `tote`: whatever the brand sells
+   that suits the idea best).
 5. Report the list, best first, one line each.
 
 ## B. Design (`/design`)
@@ -68,6 +72,12 @@ without asking. Everything you make lives in `~/PrintShop` (brands, designs, rep
      it needs to stand out.
    - Design for the shirt colours it'll be sold on: light ink on dark shirts, dark ink on light ones.
      If it can't work on both, set `--colors` to the ones it works on.
+   - **Hats are embroidered**: thread, not ink. At most 6 flat colours, no gradients, shading or
+     photo detail, no lines thinner than about 3% of the height, and short text only (1–3 words,
+     big letters). A simple bold badge, icon or word reads best. Transparent background.
+   - **Decor** (canvas, pillow, blanket, poster, mug) prints **edge to edge**: fill the whole area,
+     background included, and keep important parts away from the edges (pillows and blankets wrap
+     at the seams, canvases wrap around the frame). Scenes, patterns and illustrations work well here.
 4. **Render**: `node printshop.mjs render <id> --colors "Black,Forest Green"`. Fix every ⚠ warning.
 5. **Look at it.** Open `preview.png` and every `mockup-*.png` it prints. Is it legible? Centred? Is
    anything cut off, too thin, or the wrong colour for the shirt? Would you buy it? Redraw and
@@ -132,6 +142,7 @@ daily or weekly check-in. For every brand in `node printshop.mjs status`:
    `node printshop.mjs reject <id> --reason "specific fix"` anything that fails.
 3. **Redo**: for rejected designs with a small fix, do it yourself (workflow C).
 4. **Keep the pipeline full**: if the brand has fewer than 5 new ideas, add some (workflow A, 5 at a time).
+   Leave the sketchbook alone unless the user asked for sketches: it has no ideas quota.
    If today's started count is under `maxDesignsPerDay`, `node printshop.mjs dispatch <idea-id> --brand <b>`
    the best new ideas, each to its own design agent (up to 4 at once; it refuses past that).
 5. **List**: approved designs → `publish <id> --by manager` (a Printify draft). Add `--live` only if
@@ -139,6 +150,31 @@ daily or weekly check-in. For every brand in `node printshop.mjs status`:
 6. **Orders**: if connected, `node printshop.mjs orders --brand <b>`. Report any ⚠ order.
 7. **Report**: `node printshop.mjs report --days 1 --save`, with a few lines of your own on top:
    what you decided and why, what's stuck, and what needs the user. It's read on a phone.
+
+## H. Sketchbook (`/sketch`)
+
+Not everything has to be merch. The **sketchbook** is for cool designs and ideas for their own sake:
+experiments, illustrations, patterns, logos, scenes. Nothing in it is for sale.
+
+- **Designs**: `node printshop.mjs design new --brand sketchbook --product art --title "…"` makes a
+  4000×4000 canvas (change the `width`/`height`/`viewBox` to any shape you like). Draw, render, look
+  at the preview, redraw until it's good, as in workflow B, but there's no listing to write. Give it
+  a short `meta --description` saying what it is and what it could become ("would make a great
+  canvas print" or "the moon alone would work as a hat patch").
+- **Ideas only**: when the user wants ideas rather than drawings, add them with
+  `idea add --brand sketchbook --product art --text "…" --why "…"` and report them. Don't draw them
+  unless asked.
+- If no theme is given, pick something you'd enjoy drawing that fits the user's world (mushrooms,
+  forests, foraging, farm life) and try a style you haven't used yet.
+
+## I. Turn a design into merch (`/merch`)
+
+1. `node printshop.mjs retarget <design-id> --product hat --brand <brand>` copies the design into
+   that product's print area as a new draft. Apparel and hats get it fitted inside the safe area;
+   decor gets it filling the whole area.
+2. **Adjust it for the product**: on a hat, simplify to 6 colours or fewer and thicken thin lines; on
+   a shirt, drop the background so the fabric shows; on decor, extend the background to the edges.
+3. Render, look, write the listing, as in workflow B steps 4–7.
 
 ## G. Check-in (`/checkin`)
 

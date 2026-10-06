@@ -99,3 +99,38 @@ test('counts only working design agents', () => {
   assert.equal(ps.designAgents(state, '/r').length, 1)
   assert.equal(ps.MAX_AGENTS, 4)
 })
+
+test('retargets a design into another print area: fitted for apparel, filled for decor', () => {
+  const src = '<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="4000" viewBox="0 0 4000 4000"><circle cx="2000" cy="2000" r="900"/></svg>'
+  const hat = ps.retargetSvg(src, ps.PRODUCT_PRESETS.hat)
+  assert.match(hat, /viewBox="0 0 1200 525"/)
+  assert.match(hat, /<svg x="72" y="32" width="1056" height="462" viewBox="0 0 4000 4000" preserveAspectRatio="xMidYMid meet"><circle/)
+  const pillow = ps.retargetSvg(src, ps.PRODUCT_PRESETS.pillow)
+  assert.match(pillow, /<svg x="0" y="0" width="4050" height="4050" viewBox="0 0 4000 4000" preserveAspectRatio="xMidYMid slice">/)
+  const noViewBox = ps.retargetSvg('<svg width="300" height="200"><rect/></svg>', ps.PRODUCT_PRESETS.tee)
+  assert.match(noViewBox, /viewBox="0 0 300 200"/)
+})
+
+test('embroidery: warns about too many thread colours, and decor must fill the area', () => {
+  const W = 120, H = 60
+  const a = new Uint8Array(W * H * 4)
+  for (let y = 5; y < 55; y++) for (let x = 5; x < 115; x++) {
+    const c = Math.floor((x - 5) / 14) // 8 bands of clearly different colours
+    a.set([(c * 37) % 256, (c * 91) % 256, (c * 151) % 256, 255], (y * W + x) * 4)
+  }
+  assert.match(ps.checkPixels(a, W, H, ps.PRODUCT_PRESETS.hat).warnings.join(), /6 thread colours/)
+  assert.match(ps.checkPixels(a, W, H, ps.PRODUCT_PRESETS.pillow).warnings.join(), /prints edge to edge/)
+})
+
+test('the sketchbook makes itself, and artwork is never published', async () => {
+  await quiet(['design', 'new', '--brand', 'sketchbook', '--product', 'art', '--title', 'Moon'])
+  const [d] = ps.allDesigns('sketchbook')
+  assert.equal(d.product, 'art')
+  await quiet(['render', d.id])
+  const log = console.log
+  console.log = () => {}
+  try { ps.setStatus(d.id, 'approved') } finally { console.log = log }
+  await assert.rejects(quiet(['publish', d.id]), /artwork, not a product/)
+  // With one real brand and the sketchbook, the real one is still the default.
+  assert.equal(ps.loadBrand().name, 'test-shop')
+})

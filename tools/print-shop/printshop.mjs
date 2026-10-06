@@ -40,7 +40,19 @@ export const PRODUCT_PRESETS = {
   sticker: { label: 'Sticker', width: 1500, height: 1500, transparent: true, mockup: 'sticker', colors: ['White'], sizes: [], price: 4.99 },
   poster: { label: 'Poster', width: 5400, height: 7200, transparent: false, mockup: 'poster', colors: ['White'], sizes: [], price: 22.99 },
   tote: { label: 'Tote bag', width: 3600, height: 3600, transparent: true, mockup: 'tote', colors: ['Natural', 'Black'], sizes: [], price: 19.99 },
+  // Embroidered: thread, not ink. Few flat colours, no fine detail (see CLAUDE.md).
+  hat: { label: 'Embroidered hat', width: 1200, height: 525, transparent: true, embroidery: true, mockup: 'hat',
+    colors: ['Black', 'Khaki', 'Navy'], sizes: [], price: 26.99 },
+  // Home decor
+  canvas: { label: 'Canvas print', width: 4800, height: 3600, transparent: false, mockup: 'canvas', colors: ['White'], sizes: [], price: 39.99 },
+  pillow: { label: 'Throw pillow', width: 4050, height: 4050, transparent: false, mockup: 'pillow', colors: ['White'], sizes: [], price: 29.99 },
+  blanket: { label: 'Throw blanket', width: 6000, height: 4800, transparent: false, mockup: 'blanket', colors: ['White'], sizes: [], price: 49.99 },
+  // Not a product: a design for its own sake, kept in the sketchbook. `retarget` turns one into merch.
+  art: { label: 'Artwork', width: 4000, height: 4000, transparent: false, mockup: 'art', colors: ['White'], sizes: [], price: 0, notForSale: true },
 }
+
+/** Where designs that aren't for any product live. Made the first time it's used. */
+export const SKETCHBOOK = 'sketchbook'
 
 const COLOR_HEX = {
   black: '#151515', white: '#f4f4f2', 'forest green': '#2f4a33', 'heather grey': '#9a9b9d', 'athletic heather': '#a7a8aa',
@@ -48,6 +60,7 @@ const COLOR_HEX = {
   'military green': '#4b5320', red: '#b22222', 'true royal': '#2b4ea2', 'royal blue': '#2b4ea2', 'dark heather': '#3f4447',
   ash: '#d9d9d6', pink: '#f4b6c2', 'soft pink': '#f4c6cf', charcoal: '#36454f', 'dark grey': '#454545', mustard: '#d0a33a',
   'heather forest': '#3c5442', 'heather navy': '#3a4660', cream: '#f3ecd8', 'ice blue': '#cfe3ea', mauve: '#b38b91',
+  khaki: '#c3b091', stone: '#bfb6a5', 'spruce': '#2e4a3f', 'dark grey heather': '#4a4d50',
 }
 export const colorHex = (name) => COLOR_HEX[String(name).toLowerCase()] || (/^#[0-9a-f]{6}$/i.test(name) ? name : '#888888')
 
@@ -111,8 +124,15 @@ export function myBrands() {
   try { return fs.readdirSync(BRANDS).filter((f) => f.endsWith('.json') && !f.endsWith('.ideas.json')).map((f) => f.slice(0, -5)).sort() } catch { return [] }
 }
 export function loadBrand(name) {
+  if (name === SKETCHBOOK && !fs.existsSync(brandFile(SKETCHBOOK))) {
+    writeJson(brandFile(SKETCHBOOK), {
+      title: 'Sketchbook', niche: 'Cool designs and ideas for their own sake. Not for sale until one is turned into a product.',
+      audience: '', style: 'Anything goes: experiment.', avoid: 'Other people\'s brands, characters and celebrities.',
+      products: { art: { ...PRODUCT_PRESETS.art } }, printify: { shopId: null }, autopilot: { ...DEFAULT_AUTOPILOT }, created: now(),
+    })
+  }
   if (!name) {
-    const all = myBrands()
+    const all = myBrands().filter((b) => b !== SKETCHBOOK)
     if (all.length === 1) name = all[0]
     else die(all.length ? `Which brand? --brand ${all.join(' | ')}` : 'No brands yet: node printshop.mjs new-brand --name … (or ask an agent: /brand)')
   }
@@ -122,7 +142,8 @@ export function loadBrand(name) {
 }
 const saveBrand = (b) => writeJson(brandFile(b.name), b)
 export function productOf(brand, kind) {
-  const p = brand.products?.[kind]
+  // Artwork needs no product, so every brand can have it.
+  const p = brand.products?.[kind] || (kind === 'art' ? PRODUCT_PRESETS.art : null)
   if (!p) die(`Brand '${brand.name}' doesn't sell '${kind}'. It sells: ${Object.keys(brand.products || {}).join(', ')}`)
   return { ...(PRODUCT_PRESETS[kind] || {}), ...p, kind }
 }
@@ -312,9 +333,25 @@ export function checkPixels(pixels, W, H, p) {
     }
   }
   if (maxX < 0) return { warnings: ['The print file is empty: nothing would print.'], coverage: 0 }
+  if (p.embroidery) {
+    // Thread colours: count the flat colours that cover a real share of the design.
+    const counts = new Map()
+    for (let y = 0; y < H; y += step) {
+      for (let x = 0; x < W; x += step) {
+        const i = (y * W + x) * 4
+        if (pixels[i + 3] < 200) continue
+        const key = ((pixels[i] >> 5) << 6) | ((pixels[i + 1] >> 5) << 3) | (pixels[i + 2] >> 5)
+        counts.set(key, (counts.get(key) || 0) + 1)
+      }
+    }
+    const solid = [...counts.values()].reduce((a, b) => a + b, 0)
+    const threads = [...counts.values()].filter((n) => n > solid * 0.01).length
+    if (threads > 6) warnings.push(`About ${threads} colours: embroidery works best with 6 thread colours or fewer, all flat (no gradients or shading).`)
+  }
   const coverage = painted / samples
   const bw = (maxX - minX + 1) / W
   const bh = (maxY - minY + 1) / H
+  if (!p.transparent && coverage < 0.97) warnings.push(`It doesn't fill the print area (${Math.round(coverage * 100)}% covered). ${p.label || 'This product'} prints edge to edge: fill the background.`)
   if (p.transparent && coverage > 0.97) warnings.push('The background is filled in. On apparel it prints as a solid box: make the background transparent.')
   const m = 0.02
   if (p.transparent && (minX < W * m || minY < H * m || maxX > W * (1 - m) || maxY > H * (1 - m))) {
@@ -330,6 +367,11 @@ const SHAPES = {
   mug: { shape: 'M170 300 L740 300 L740 820 Q740 870 690 870 L220 870 Q170 870 170 820 Z M740 400 Q880 400 880 560 Q880 720 740 720', area: [200, 360, 510, 198] },
   poster: { shape: 'M200 70 L800 70 L800 930 L200 930 Z', area: [230, 100, 540, 720] },
   sticker: { shape: 'M500 120 A380 380 0 1 1 499 120 Z', area: [190, 190, 620, 620] },
+  hat: { shape: 'M250 585 Q245 255 500 245 Q755 255 750 585 Z M235 585 Q500 545 790 585 Q845 650 715 668 L300 668 Q180 655 235 585 Z', area: [345, 360, 310, 136] },
+  canvas: { shape: 'M140 230 L860 230 L860 770 L140 770 Z', area: [140, 230, 720, 540] },
+  pillow: { shape: 'M175 175 Q500 135 825 175 Q865 500 825 825 Q500 865 175 825 Q135 500 175 175 Z', area: [190, 190, 620, 620] },
+  blanket: { shape: 'M110 190 L890 190 L890 814 L110 814 Z', area: [110, 190, 780, 624] },
+  art: { shape: 'M90 90 L910 90 L910 910 L90 910 Z', area: [100, 100, 800, 800] },
 }
 
 /** A flat mockup: the product's silhouette in `hex`, with the design placed on its print area. */
@@ -396,6 +438,45 @@ const svgText = (svg) => [...svg.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/gi)].ma
 export function riskyWords(text) {
   const t = ` ${String(text).toLowerCase().replace(/\s+/g, ' ')} `
   return RISKY.filter((w) => new RegExp(`(^|[^a-z])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z]|$)`).test(t))
+}
+
+/**
+ * A copy of a design made for another product: the old art, scaled into the new print area's safe
+ * zone, as a fresh draft to adjust. How a sketchbook design becomes a shirt, hat or pillow.
+ */
+export function retargetSvg(svg, p) {
+  const m = /<svg\b([^>]*)>/i.exec(svg) || die('design.svg has no <svg> tag.')
+  const attrs = m[1]
+  const vb = /viewBox\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1] ||
+    `0 0 ${/width\s*=\s*["']?([\d.]+)/i.exec(attrs)?.[1] || 1000} ${/height\s*=\s*["']?([\d.]+)/i.exec(attrs)?.[1] || 1000}`
+  const inner = svg.slice(m.index + m[0].length, svg.lastIndexOf('</svg>'))
+  const { width: W, height: H } = p
+  // Apparel and hats: fit inside the safe area. Decor and mugs print edge to edge: fill it.
+  const pad = p.transparent ? 0.06 : 0
+  const fit = p.transparent ? 'xMidYMid meet' : 'xMidYMid slice'
+  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  <!-- ${p.label}: print area ${W}×${H}. Made from another design: adjust it for this product. -->
+  <svg x="${Math.round(W * pad)}" y="${Math.round(H * pad)}" width="${Math.round(W * (1 - 2 * pad))}" height="${Math.round(H * (1 - 2 * pad))}" viewBox="${vb}" preserveAspectRatio="${fit}">${inner}</svg>
+</svg>
+`
+}
+
+function cmdRetarget(a) {
+  const id = a._[1] || die('usage: retarget <design-id> --product tee|hat|pillow|… [--brand B]')
+  const { dir, meta } = findDesign(id)
+  const brand = loadBrand(a.brand || (meta.brand === SKETCHBOOK ? undefined : meta.brand))
+  const kind = a.product || die('Which product? --product tee (or hat, mug, pillow, canvas…)')
+  const p = productOf(brand, kind)
+  const newId = `${slug(meta.title, 28)}-${kind}-${crypto.randomBytes(2).toString('hex')}`
+  const out = designDir(brand.name, newId)
+  fs.mkdirSync(out, { recursive: true })
+  fs.writeFileSync(path.join(out, 'design.svg'), retargetSvg(fs.readFileSync(path.join(dir, 'design.svg'), 'utf8'), p))
+  writeJson(path.join(out, 'meta.json'), {
+    id: newId, brand: brand.name, product: kind, title: meta.title, idea: meta.idea || '', ideaText: meta.ideaText || '', from: id,
+    description: '', tags: meta.tags || [], colors: p.colors.slice(0, 4), price: p.price, status: 'draft', created: now(), history: [],
+  })
+  console.log(`made ${newId} for ${brand.name} (${p.label}) from ${id}\n  edit:   ${path.join(out, 'design.svg')}\n  then:   node printshop.mjs render ${newId}` +
+    (p.embroidery ? '\n  It\'s embroidered: simplify to 6 flat colours or fewer and thicken thin lines.' : ''))
 }
 
 function cmdMeta(a) {
@@ -544,7 +625,7 @@ async function cmdConnect(a) {
   fs.writeFileSync(TOKEN_FILE, tok + '\n', { mode: 0o600 })
   if (!Array.isArray(shops) || !shops.length) die('Connected, but this Printify account has no store yet. In Printify: Manage stores → Add new store (Shopify, Etsy, or the Printify Pop-Up Store), then run connect again.')
   for (const s of shops) console.log(`shop ${s.id}: ${s.title} (${s.sales_channel})`)
-  const brands = a.brand ? [a.brand] : myBrands()
+  const brands = a.brand ? [a.brand] : myBrands().filter((b) => b !== SKETCHBOOK)
   const shop = a.shop ? shops.find((s) => String(s.id) === String(a.shop)) : shops.length === 1 ? shops[0] : null
   if (!shop) return console.log('Several stores: run again with --shop <id> --brand <brand> to pick one.')
   for (const n of brands) {
@@ -634,6 +715,7 @@ async function cmdPublish(a) {
   const { dir, meta, metaPath } = findDesign(id)
   const brand = loadBrand(meta.brand)
   const p = productOf(brand, meta.product)
+  if (p.notForSale) die(`${id} is artwork, not a product. Make a product version first: retarget ${id} --product tee --brand <brand>`)
   if (!['approved', 'listed'].includes(meta.status)) die(`${id} is ${meta.status}. Only approved designs go to Printify.`)
   if (a.live && a.by === 'manager' && !autopilot(brand).publish) die(`autopilot.publish is off for '${brand.name}': the manager may only make Printify drafts.`)
   const shop = brand.printify?.shopId || die(`'${brand.name}' has no Printify store yet. The user runs: node printshop.mjs connect`)
@@ -719,6 +801,7 @@ function cmdReport(a) {
     lines.push(`## ${n}`, `- New designs: ${recent.length}. Approved: ${count('approved')}. Rejected: ${count('rejected')}. To Printify: ${count('listed')}. Live: ${count('published')}.`,
       `- Now: ${s.pending} to review, ${s.approved} approved waiting, ${s.newIdeas} ideas waiting.`, '')
     if (s.pending && !s.autopilot.approve) needs.push(`${n}: ${s.pending} design(s) to review (Review designs page)`)
+    if (n === SKETCHBOOK) continue
     if (!s.connected) needs.push(`${n}: connect Printify (node printshop.mjs connect)`)
     else if (!s.pickedProducts.length) needs.push(`${n}: no Printify product picked yet (ask an agent: /brand pick products for ${n})`)
   }
@@ -791,12 +874,13 @@ async function cmdDoctor() {
 const HELP = `Print Shop: node printshop.mjs <command>
 
   doctor                                 check the renderer, folders and Printify
-  new-brand --name N --title T --niche … [--audience …] [--style …] [--products tee,sticker,mug]
+  new-brand --name N --title T --niche … [--audience …] [--style …] [--products tee,hat,sticker,mug,pillow,canvas,…]
   brands                                 list brands and what they sell
   idea add --text "…" --why "…" [--product tee] [--brand B]
   ideas [--status new|all] [--brand B]   ·  idea skip <idea-id> --reason "…"
   dispatch <idea-id> [--brand B]         start a design agent for it in Agent Colony (max ${MAX_AGENTS} at once)
-  design new --title "…" [--product tee] [--idea <idea-id>]   make design.svg to edit
+  design new --title "…" [--product tee|hat|pillow|canvas|art…] [--idea <idea-id>]   make design.svg to edit
+  retarget <design-id> --product hat [--brand B]   a copy of a design for another product (sketchbook → merch)
   render <design-id> [--colors "Black,White"] [--reason "what changed"]   print file, mockups, checks
   meta <design-id> [--title] [--description] [--tags a,b] [--colors] [--price]
   queue [--status pending|approved|rejected|all] [--brand B]
@@ -817,7 +901,7 @@ export async function main(argv) {
     design: cmdDesign, render: cmdRender, meta: cmdMeta, queue: cmdQueue, feedback: cmdFeedback,
     approve: (x) => setStatus(x._[1] || die('usage: approve <design-id>'), 'approved', { note: x.note || '', by: x.by || '' }),
     reject: (x) => setStatus(x._[1] || die('usage: reject <design-id> --reason "…"'), 'rejected', { reason: x.reason || die('Say why: --reason "…" (the agents learn from it)') }),
-    connect: cmdConnect, catalog: cmdCatalog, product: cmdProduct, publish: cmdPublish, orders: cmdOrders,
+    retarget: cmdRetarget, connect: cmdConnect, catalog: cmdCatalog, product: cmdProduct, publish: cmdPublish, orders: cmdOrders,
     status: cmdStatus, report: cmdReport,
   }
   if (!cmd || cmd === 'help' || a.help) return console.log(HELP)
