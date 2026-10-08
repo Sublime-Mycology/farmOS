@@ -1,0 +1,12 @@
+[
+  { "label": "Manager shift", "prompt": "/manage" },
+  { "label": "Research my niche", "prompt": "/research" },
+  { "label": "Hooks", "prompt": "/hooks" },
+  { "label": "Make a Reel", "prompt": "/make TOPIC-OR-ANGLE-ID reel" },
+  { "label": "Make a carousel", "prompt": "/make TOPIC-OR-ANGLE-ID carousel" },
+  { "label": "Redo rejected", "prompt": "/redo" },
+  { "label": "Posting plan", "prompt": "/plan" },
+  { "label": "Check-in report", "prompt": "/checkin 1" },
+  { "label": "Style sheet", "prompt": "/look" },
+  { "label": "New account", "prompt": "/account Make an account called NAME about NICHE for AUDIENCE, posting 2 times a day" }
+]

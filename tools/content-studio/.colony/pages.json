@@ -1,0 +1,4 @@
+[
+  { "label": "Ready to post", "env": "CONTENT_STUDIO_HOME", "default": "~/ContentStudio", "sub": "posts" },
+  { "label": "Studio reports", "env": "CONTENT_STUDIO_HOME", "default": "~/ContentStudio", "sub": "reports" }
+]

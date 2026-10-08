@@ -1,0 +1,5 @@
+[
+  { "id": "studio-research", "label": "Morning research", "prompt": "/research", "at": "07:10", "days": "daily" },
+  { "id": "studio-manager", "label": "Manager shift", "prompt": "/manage", "every": "3h", "from": "08:00", "to": "22:00" },
+  { "id": "studio-checkin-weekly", "label": "Weekly check-in", "prompt": "/checkin 7", "days": "mon", "at": "08:50" }
+]

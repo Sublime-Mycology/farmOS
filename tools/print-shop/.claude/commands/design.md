@@ -1,6 +1,6 @@
 ---
-description: Design one idea: SVG, print file, mockups, listing
-argument-hint: <idea-id or idea in words> [brand]
+description: "Design one idea: SVG, print file, mockups, listing"
+argument-hint: "<idea-id or idea in words> [brand]"
 ---
 Run **workflow B (Design)** from CLAUDE.md for: $ARGUMENTS
 

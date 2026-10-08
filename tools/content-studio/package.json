@@ -1,0 +1,15 @@
+{
+  "name": "content-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An Instagram content system run by agents: research, hooks, scripts, visuals, Reels and carousels, review and a posting plan.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}
