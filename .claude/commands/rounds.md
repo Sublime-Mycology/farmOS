@@ -1,6 +1,6 @@
 ---
-description: Check the channel's creators for new uploads and start clipping the good ones
-argument-hint: [channel] [max videos, default: until all 6 agents are busy]
+description: "Check the channel's creators for new uploads and start clipping the good ones"
+argument-hint: "[channel] [max videos, default: until all 6 agents are busy]"
 ---
 Run **workflow B (Inbox rounds)** from CLAUDE.md for: $ARGUMENTS
 

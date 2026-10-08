@@ -26,6 +26,8 @@ $Colony    = Join-Path $ColonySrc 'tools\agent-colony'
 $Clip      = Join-Path $Code 'clip-factory'
 $Shop      = Join-Path $Code 'print-shop'
 $ShopSrc   = Join-Path $ColonySrc 'tools\print-shop'
+$Studio    = Join-Path $Code 'content-studio'
+$StudioSrc = Join-Path $ColonySrc 'tools\content-studio'
 $Media     = Join-Path $HOME 'ClipFactory'
 $VenvPy    = Join-Path $Media '.venv\Scripts\python.exe'
 $Quiet     = [bool]$env:COLONY_SETUP_QUIET
@@ -155,22 +157,26 @@ Run $VenvPy (Join-Path $Clip 'clipper.py') doctor
 Step 'Adding Clip Factory to the colony'
 Run 'node' (Join-Path $Colony 'scripts\add-repo.mjs') $Clip --allow
 
-# Print Shop ships inside Agent Colony. It gets its own folder and local git repo, so each design
-# agent can work in its own worktree; updates are copied in and committed here.
-Step 'Setting up Print Shop (print-on-demand merch)'
-$shopNew = -not (Test-Path (Join-Path $Shop '.git'))
-New-Item -ItemType Directory -Force -Path $Shop | Out-Null
-Copy-Item -Path (Join-Path $ShopSrc '*') -Destination $Shop -Recurse -Force
-if ($shopNew) { Run 'git' -C $Shop init --quiet }
-$shopChanges = & git -C $Shop status --porcelain
-if ($shopChanges) {
-  Run 'git' -C $Shop add -A
-  Run 'git' -C $Shop -c user.name='Print Shop' -c user.email='print-shop@localhost' commit --quiet -m 'Update from Agent Colony'
+# Print Shop and Content Studio ship inside Agent Colony. Each gets its own folder and local git
+# repo, so every agent can work in its own worktree; updates are copied in and committed there.
+function Setup-Wing([string]$Label, [string]$Src, [string]$Dest, [string]$Tool) {
+  Step "Setting up $Label"
+  $isNew = -not (Test-Path (Join-Path $Dest '.git'))
+  New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+  Copy-Item -Path (Join-Path $Src '*') -Destination $Dest -Recurse -Force
+  if ($isNew) { Run 'git' -C $Dest init --quiet }
+  $changes = & git -C $Dest status --porcelain
+  if ($changes) {
+    Run 'git' -C $Dest add -A
+    Run 'git' -C $Dest -c user.name='Agent Colony' -c user.email='colony@localhost' commit --quiet -m 'Update from Agent Colony'
+  }
+  Push-Location $Dest
+  try { Run 'npm.cmd' install --no-audit --no-fund --loglevel=error --update-notifier=false } finally { Pop-Location }
+  Run 'node' (Join-Path $Dest $Tool) doctor
+  Run 'node' (Join-Path $Colony 'scripts\add-repo.mjs') $Dest --allow
 }
-Push-Location $Shop
-try { Run 'npm.cmd' install --no-audit --no-fund --loglevel=error --update-notifier=false } finally { Pop-Location }
-Run 'node' (Join-Path $Shop 'printshop.mjs') doctor
-Run 'node' (Join-Path $Colony 'scripts\add-repo.mjs') $Shop --allow
+Setup-Wing 'Print Shop (print-on-demand merch)' $ShopSrc $Shop 'printshop.mjs'
+Setup-Wing 'Content Studio (Instagram posts)' $StudioSrc $Studio 'studio.mjs'
 
 # 4. First channel ------------------------------------------------------------------------------
 $channels = @(Get-ChildItem -Path (Join-Path $Media 'channels') -Filter '*.json' -ErrorAction SilentlyContinue)
@@ -243,6 +249,7 @@ Write-Host '  * To add a creator who said yes: tell any agent there, e.g.'
 Write-Host '      Add @CreatorHandle to YOUR-CHANNEL, they allowed clipping via their clip program'
 Write-Host "  * Finished clips to review: $Media\review"
 Write-Host '  * Merch: click print-shop in the right panel and press "New brand" to start a shop.'
+Write-Host '  * Instagram: click content-studio in the right panel and press "New account".'
 } finally {
   try { Stop-Transcript | Out-Null } catch { }
 }
