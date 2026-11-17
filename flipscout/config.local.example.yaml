@@ -1,0 +1,11 @@
+# Copy to config.local.yaml (gitignored) and fill in. Values here override config.yaml.
+owner:
+  first_name: ""            # used to sign seller messages
+  needs_owner_label: ""     # e.g. "NEEDS <NAME>" in the report
+  report_email: ""          # where the daily report goes (also the Gmail account that sends it)
+  home_zip: ""
+  home_lat: 0.0             # ZIP centroid
+  home_lon: 0.0
+  # Used ONLY on Carvana / CarMax / KBB quote forms. Never sent to sellers.
+  quote_contact_email: ""
+  quote_contact_phone: ""

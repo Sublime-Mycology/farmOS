@@ -1,0 +1,11 @@
+# Personal config and all runtime data stay on your machine
+config.local.yaml
+.env
+data/
+reports/
+*.db
+*.db-journal
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

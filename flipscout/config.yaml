@@ -1,0 +1,245 @@
+# flipscout configuration
+#
+# Personal details (name, email, phone, home ZIP/coordinates, quote contact info)
+# live in config.local.yaml, which is gitignored. See config.local.example.yaml.
+#
+# Lines marked  # VERIFY  are assumptions you should confirm before go-live.
+# The daily report lists any VERIFY items still unconfirmed under "Run health".
+# To confirm one, change the value if needed and add its key to verified_keys.
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# Mode switches. Phase 1 ships with everything outbound OFF.
+# ---------------------------------------------------------------------------
+mode:
+  dry_run: true                    # true = nothing sent, no quote forms submitted
+  messaging_enabled: false         # turned on only after you approve the dry run
+  quote_automation_enabled: false  # Carvana/CarMax/KBB form automation
+  email_report: false              # dry run writes reports/*.html only
+
+schedule:
+  timezone: America/New_York
+  scan_time: "06:00"               # flipscout run
+  hard_stop: "06:50"               # stop collecting, send partial report
+  report_deadline: "07:00"
+  outreach_time: "08:00"           # queued seller messages go out here, not at 6 AM
+  followup_inbox_passes: []        # e.g. ["12:30", "18:30"]: read replies + negotiate, no scanning
+
+# ---------------------------------------------------------------------------
+# What to look for
+# ---------------------------------------------------------------------------
+search:
+  radius_miles: 100
+  road_miles_factor: 1.25          # straight-line miles x this = approx road miles
+  min_year: 1992
+  budget_max_purchase: 8000        # walk-away price is never above this
+  max_asking_price: 9500           # consider asks up to this; negotiation must land <= budget
+  min_asking_price: 1000           # below this is mostly junk/scams
+  max_mileage: 250000
+  vehicle_types: [car, truck, suv, van]
+
+sources:
+  politeness:
+    min_delay_seconds: 4
+    max_delay_seconds: 9
+    stop_source_on_block: true     # login wall / checkpoint / CAPTCHA / 403 / 429 -> stop for the day
+    retry_after_block: false       # never retry a block the same day
+  craigslist:
+    enabled: true
+    category: cto                  # "cars & trucks - by owner" (owner-only category)
+    # Searched with postal=<home ZIP>&search_distance=<radius>. Distance is also
+    # re-checked per listing, so a site slightly out of range is harmless.
+    sites:
+      - harrisonburg
+      - charlottesville
+      - winchester
+      - fredericksburg
+      - lynchburg
+      - washingtondc
+      - frederick
+      - martinsburg                # eastern WV panhandle; VERIFY site slug
+    max_search_pages_per_site: 2
+    max_detail_pages_per_run: 60
+  facebook:
+    enabled: true
+    browser_profile_dir: ~/.flipscout/browser-profile
+    category: vehicles
+    sort: creation_time_descend
+    max_scrolls: 6
+    max_detail_pages_per_run: 40
+    # location + radius are set once during `flipscout login` (stored by Marketplace)
+
+# ---------------------------------------------------------------------------
+# Profit math
+# ---------------------------------------------------------------------------
+profit:
+  min_net_profit: 1000
+  travel_cost_per_mile: 0.70       # PLACEHOLDER for your $[X]/mile. VERIFY
+  round_trips_per_purchase: 1      # inspect + buy in one trip; set 2 if you inspect first
+  condition_risk_buffer_pct: 0.10  # 10% of the best offer
+  condition_risk_buffer_base: best_offer
+  # One-way-and-back miles to hand the car to each buyer (Carvana picks up free).
+  delivery_round_trip_miles:
+    carvana: 0
+    carmax: 110                    # nearest CarMax store. VERIFY
+    kbb_ico: 40                    # participating dealer. VERIFY
+
+virginia:
+  sales_and_use_tax_rate: 0.0415   # VA Motor Vehicle Sales & Use Tax. VERIFY
+  sales_and_use_tax_minimum: 75    # VERIFY
+  title_fee: 15                    # VERIFY
+  register_vehicle: false          # title-only when flipping to an instant buyer. VERIFY
+  registration_fee: 40.75          # used only if register_vehicle: true. VERIFY
+  trip_permit_fee: 5               # to drive it home before titling/registering. VERIFY
+  insurance_cost_per_day: 3.00     # your policy's cost for a newly acquired car. VERIFY
+  personal_property_tax:
+    enabled: false                 # Page County: rate and proration rules. VERIFY
+    rate_per_100_assessed: 0.0
+    prorated_monthly: true
+  dealer_threshold:
+    presumption_at: 5              # VA: offering/selling/displaying 5+ vehicles in 12 consecutive months
+    warn_at: 3
+    stop_recommending_at: 4
+    count_offered_for_sale: true   # count listed-for-sale vehicles, not only completed sales
+    count_currently_held: true     # cars you own now will be offered
+
+# ---------------------------------------------------------------------------
+# Valuation
+# ---------------------------------------------------------------------------
+valuation:
+  exit_strategies: [instant, patient]
+  comps:
+    lookback_days: 90
+    year_window: 2
+    mileage_window: 30000
+    min_comps_medium: 4
+    min_comps_high: 8
+    max_iqr_ratio_high: 0.25       # (p75 - p25) / median must be under this for HIGH
+  instant:
+    buyers: [carvana, carmax, kbb_ico]   # third buyer: kbb_ico. Alternatives: peddle, cargurus, driveway
+    offer_ratio_default: 0.78      # est. instant offer / private-party market value. VERIFY
+    calibrate_after_real_quotes: 5 # per make/segment, ratio learns from your REAL quotes
+    offer_validity_days_default:   # used only when the page doesn't show an expiry. VERIFY
+      carvana: 7
+      carmax: 7
+      kbb_ico: 7
+    condition_answers: conservative  # unknown -> worse plausible answer; never better than listing
+  patient:
+    sale_ratio: 0.95               # expected private sale price / market median
+    hold_days: 21
+    extra_costs: 150               # detail, photos, listing, misc
+  estimate_uses: low_band          # walk-away math on ESTIMATE uses the 25th-percentile band
+  vin_decode: nhtsa_vpic           # free public API; also checks open recalls
+
+# ---------------------------------------------------------------------------
+# Filters
+# ---------------------------------------------------------------------------
+filters:
+  reject_title_keywords: [salvage, rebuilt, rebuildable, reconstructed, flood, junk title,
+    lemon, buyback, bonded title, branded, "non-repairable", "certificate of destruction"]
+  reject_no_title_keywords: ["no title", "lost title", "bill of sale only", "title in transit",
+    "waiting on title", "parts only", "no paperwork"]
+  reject_not_running_keywords: ["doesn't run", "does not run", "not running", "won't start",
+    "wont start", "no start", "needs engine", "needs motor", "needs transmission", "blown",
+    "mechanic special", "project car", "parts car", "tow only", "seized"]
+  dealer_keywords: [financing, "buy here pay here", "doc fee", "dealer fee", "stock #",
+    "stock number", "warranty available", "we finance", "+ tax", "plus tax and tags",
+    "trade-ins welcome", "inventory"]
+  dealer_max_vehicle_listings_by_seller: 3
+  scam:
+    price_below_market_ratio: 0.55
+    keywords: [deposit, escrow, shipping, "ship it", "gift card", zelle, cashapp, "cash app",
+      venmo, "text me at", "email me at", "deployed", overseas, "ebay motors protection",
+      "my late husband", "moving abroad"]
+    duplicate_photo_hamming_max: 6 # perceptual-hash distance counted as "same photo"
+    stock_photo_check: true        # Claude image check on photo #1
+  soft_flags:                      # score deductions (points)
+    lien: 4
+    over_200k_miles: 3
+    two_or_fewer_photos: 3
+    vague_description: 2
+    vin_mismatch: 8
+    open_recall: 1
+    needs_minor_work: 2
+
+# ---------------------------------------------------------------------------
+# Scoring
+# ---------------------------------------------------------------------------
+scoring:
+  weights:
+    net_profit: 35
+    confidence: 20
+    responsiveness: 10
+    days_listed: 10
+    distance: 10
+    red_flags: 15
+  profit_points_at_min: 10         # $1,000 net -> 10 of 35
+  profit_full_marks_at: 3000
+  confidence_points: {REAL: 20, HIGH: 16, MEDIUM: 10, LOW: 4}
+  auto_contact_threshold: 60
+  top_n_in_report: 5
+
+# ---------------------------------------------------------------------------
+# Messaging and negotiation (inactive until messaging_enabled: true)
+# ---------------------------------------------------------------------------
+messaging:
+  max_first_contacts_per_day: 5
+  max_messages_per_day: 25
+  quiet_hours: {start: "21:00", end: "08:00"}
+  channels:
+    facebook: messenger_in_browser
+    craigslist: email_relay        # via Gmail SMTP; phone-only listings -> draft text for you
+  on_send_failure: save_draft
+  needs_owner_triggers:            # never done automatically
+    - meeting_time_or_place
+    - money_or_deposit
+    - address_or_payment_details
+    - final_binding_commitment
+    - seller_requests_off_platform
+  guard:
+    block_price_above_walkaway: true
+    require_inspection_phrase_on_agreement: true
+    block_competing_offer_claims: true
+    block_time_commitments: true
+    block_addresses_and_phone: true
+
+negotiation:
+  open_below_walkaway_pct: {min: 0.10, max: 0.15}
+  never_above_asking: true
+  close_fast_if_asking_below_walkaway_pct: 0.15  # great deal: offer slightly under asking, flag it
+  close_fast_discount_from_asking: 0.05
+  step_min_dollars: 100
+  step_fraction_of_gap: 0.33
+  max_counter_rounds: 4
+  require_real_quote_to_agree: true   # or patient exit at HIGH confidence
+  agreement_phrase: "pending in-person inspection"
+
+# ---------------------------------------------------------------------------
+# Claude (model) settings
+# ---------------------------------------------------------------------------
+llm:
+  enabled: true                    # false -> keyword rules only; replies go to NEEDS-owner
+  model: claude-opus-5-5           # claude-haiku-5-5 is ~40x cheaper; your call
+  effort: low
+  api_key_env: ANTHROPIC_API_KEY
+  daily_call_cap: 120
+  write_outbound_freeform: false   # outbound messages are code-filled templates
+
+# ---------------------------------------------------------------------------
+# Report delivery and storage
+# ---------------------------------------------------------------------------
+email:
+  smtp_host: smtp.gmail.com
+  smtp_port: 465
+  imap_host: imap.gmail.com        # reads Craigslist relay replies
+  password_source: keyring         # Gmail App Password, stored via `flipscout email setup`
+  keyring_service: flipscout-gmail
+
+storage:
+  db_path: data/flipscout.db
+  photos_dir: data/photos
+  reports_dir: reports
+  log_dir: data/logs
+
+verified_keys: []                  # e.g. [virginia.title_fee, profit.travel_cost_per_mile]
