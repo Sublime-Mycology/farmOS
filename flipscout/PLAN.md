@@ -1,4 +1,27 @@
-# flipscout: build plan (v0, waiting for your OK)
+# flipscout: build plan
+
+## Status (updated 2026-11-17)
+
+| Phase | State |
+|---|---|
+| 0: plan and config | Approved |
+| 1: scanner, filters, valuation, scoring, report, dry run | **Built and tested on sample pages** (47 tests). Real dry run next, on your laptop |
+| 2: messaging, negotiation, outreach, email, scheduler | **Built, switched off.** Turn on after you approve the dry run (`flipscout mode live`, `flipscout schedule install`) |
+
+**Changed from the original plan:**
+
+- **Instant-offer quotes are assisted, not automated.** `flipscout quote assist <id>`
+  opens the Carvana, CarMax and KBB sell pages with the VIN and conservative
+  answers, then records the offers you get.
+  - Form-filling bots for those sites can't be built or verified without
+    seeing the live pages, which this sandbox can't reach.
+- **Marketplace sending and inbox reading are best-effort.** Every send verifies
+  itself, and a failure becomes a draft for you.
+  - `flipscout reply <id> "text"` logs any reply by hand.
+- **Without a Claude API key**, seller replies go to you instead of being
+  negotiated automatically.
+
+How to install and run it on your laptop: [README.md](README.md).
 
 flipscout finds privately listed used cars that can be bought within budget and
 resold for at least the minimum net profit. It handles first contact and

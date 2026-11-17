@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flipscout {{ date }}</title>
+<style>
+  body { margin:0; padding:0; background:#f4f3ef; color:#1f2328; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size:15px; line-height:1.45; }
+  .wrap { max-width:760px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { font-size:22px; margin:0 0 2px; letter-spacing:-0.01em; }
+  .sub { color:#5c6370; font-size:13px; margin-bottom:16px; }
+  h2 { font-size:16px; margin:28px 0 10px; padding-bottom:6px; border-bottom:2px solid #1f2328; text-transform:uppercase; letter-spacing:0.04em; }
+  .banner { border-radius:8px; padding:10px 12px; margin:8px 0; font-size:14px; }
+  .b-sample { background:#ede7ff; border:1px solid #b9a7f5; }
+  .b-dry { background:#e8f1ff; border:1px solid #9cc0f5; }
+  .b-warn { background:#fff4d6; border:1px solid #f0c75e; }
+  .b-stop, .b-block { background:#ffe3e0; border:1px solid #f09a91; }
+  .card { background:#fff; border:1px solid #dedcd5; border-radius:10px; padding:14px; margin:10px 0; }
+  .card h3 { font-size:16px; margin:0 0 6px; }
+  .card h3 a { color:#1f2328; text-decoration:none; }
+  .rank { display:inline-block; min-width:26px; height:26px; line-height:26px; text-align:center; border-radius:13px; background:#1f2328; color:#fff; font-size:13px; font-weight:700; margin-right:6px; }
+  .score { float:right; font-weight:700; font-size:20px; }
+  .score small { font-size:11px; color:#5c6370; font-weight:400; display:block; text-align:right; }
+  .grid { display:table; width:100%; border-collapse:collapse; margin:6px 0; }
+  .kv { display:inline-block; vertical-align:top; width:32%; min-width:150px; margin:4px 0; }
+  .k { color:#5c6370; font-size:12px; text-transform:uppercase; letter-spacing:0.03em; }
+  .v { font-weight:600; }
+  .net-pos { color:#116329; }
+  .net-neg { color:#a40e26; }
+  .pill { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; font-weight:700; letter-spacing:0.03em; vertical-align:middle; }
+  .p-real { background:#d6f5df; color:#116329; }
+  .p-est { background:#fff1c2; color:#7a5300; }
+  .p-src { background:#eceae4; color:#3d4148; }
+  .p-fast { background:#ffe3e0; color:#a40e26; }
+  .next { margin-top:8px; padding:8px 10px; background:#f6f8fa; border-left:4px solid #1f2328; border-radius:4px; font-size:14px; }
+  .flags { color:#7a5300; font-size:13px; margin-top:6px; }
+  table.t { width:100%; border-collapse:collapse; background:#fff; border:1px solid #dedcd5; border-radius:8px; font-size:13.5px; }
+  table.t th, table.t td { text-align:left; padding:7px 8px; border-bottom:1px solid #eceae4; vertical-align:top; }
+  table.t th { background:#f6f5f1; font-size:12px; text-transform:uppercase; letter-spacing:0.03em; color:#5c6370; }
+  .draft { white-space:pre-wrap; background:#fff; border:1px dashed #b5b2a8; border-radius:8px; padding:10px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size:13px; margin:6px 0 4px; }
+  .muted { color:#5c6370; font-size:13px; }
+  a { color:#0b57d0; }
+  ul.plain { padding-left:18px; margin:6px 0; }
+  .foot { margin-top:30px; color:#5c6370; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>flipscout daily report</h1>
+  <div class="sub">{{ date }} · generated {{ generated }} · min net {{ min_profit|money }} · budget {{ budget|money }}</div>
+
+  {% if sample %}<div class="banner b-sample"><b>SAMPLE DATA.</b> These are made-up listings that show the report layout. They are not real cars.</div>{% endif %}
+  {% if dry_run %}<div class="banner b-dry"><b>DRY RUN.</b> No messages were sent and no quote forms were submitted. Drafted messages are in section 3 for review.</div>{% endif %}
+  {% for b in blocks %}<div class="banner b-block"><b>BLOCKED:</b> {{ b }}</div>{% endfor %}
+  {% if dealer.stop %}<div class="banner b-stop"><b>Dealer threshold:</b> {{ dealer.message }}</div>
+  {% elif dealer.warn %}<div class="banner b-warn"><b>Dealer threshold:</b> {{ dealer.message }}</div>{% endif %}
+
+  <h2>1 · Close these first</h2>
+  {% if not top %}<p class="muted">Nothing clears your criteria today. See section 4 for what's being watched.</p>{% endif %}
+  {% for d in top %}
+  <div class="card">
+    <div class="score">{{ d.score }}<small>score</small></div>
+    <h3><span class="rank">{{ loop.index }}</span><a href="{{ d.url }}">{{ d.title }}</a>
+      <span class="pill p-src">{{ 'Marketplace' if d.source == 'facebook' else 'Craigslist' }}</span>
+      {% if d.close_fast %}<span class="pill p-fast">CLOSE FAST</span>{% endif %}</h3>
+    <div>
+      <div class="kv"><div class="k">Asking</div><div class="v">{{ d.asking|money }}{% if d.prev_price and d.prev_price > (d.asking or 0) %} <span class="muted">(was {{ d.prev_price|money }})</span>{% endif %}</div></div>
+      <div class="kv"><div class="k">{{ (d.target[0] ~ ' price') if d.target else 'Target' }}</div><div class="v">{{ d.target[1]|money if d.target else '—' }}</div><div class="muted">walk-away {{ d.walk_away|money }}</div></div>
+      <div class="kv"><div class="k">Best offer ({{ 'instant' if d.offer_exit == 'instant' else 'patient resale' }})</div>
+        <div class="v">{{ d.offer|money }} <span class="pill {{ 'p-real' if d.offer_kind == 'REAL' else 'p-est' }}">{{ d.offer_kind }}</span></div>
+        <div class="muted">{{ d.offer_buyer }}{% if d.offer_kind != 'REAL' %} · {{ d.offer_conf }} confidence{% endif %}{% if d.offer_expires %} · expires {{ d.offer_expires }}{% endif %}</div></div>
+      <div class="kv"><div class="k">Net profit</div><div class="v {{ 'net-pos' if (d.net or 0) >= min_profit else 'net-neg' }}">{{ d.net|money }}</div><div class="muted">if bought at {{ d.buy_at|money }}{% if d.net_at_target and d.target and d.target[0] != 'agreed' %} · {{ d.net_at_target|money }} at target{% endif %}</div></div>
+      <div class="kv"><div class="k">Distance</div><div class="v">{{ d.distance|miles }} mi{% if d.distance_approx %} <span class="muted">(approx.)</span>{% endif %}</div><div class="muted">{{ d.mileage|miles }} miles on car</div></div>
+      <div class="kv"><div class="k">Conversation</div><div class="v">{{ d.stage }}</div></div>
+    </div>
+    <div class="next"><b>Next:</b> {{ d.action }}</div>
+    {% if d.flags %}<div class="flags">⚑ {% for f in d.flags %}{{ f[1] or f[0] }}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+  </div>
+  {% endfor %}
+
+  <h2>2 · Active negotiations</h2>
+  {% if not negotiations %}<p class="muted">No active negotiations.</p>{% else %}
+  <table class="t"><tr><th>Car</th><th>Stage</th><th>Our last</th><th>Seller</th><th>Walk-away</th><th>Days</th></tr>
+  {% for n in negotiations %}
+  <tr><td><a href="{{ n.url }}">{{ n.title }}</a>{% if n.last_in %}<div class="muted">Seller: “{{ n.last_in.body[:140] }}”</div>{% endif %}</td>
+      <td>{{ n.stage }}{% if n.agreed %}<div class="muted">agreed {{ n.agreed|money }} (pending inspection)</div>{% endif %}</td>
+      <td>{{ n.our_last|money }}</td><td>{{ n.seller_ask|money }}</td><td>{{ n.walk_away|money }}</td><td>{{ n.days_open if n.days_open is not none else '—' }}</td></tr>
+  {% endfor %}</table>{% endif %}
+
+  <h2>3 · Needs you ({{ label }})</h2>
+  {% if not needs and not needs_quote and not drafts %}<p class="muted">Nothing needs you today.</p>{% endif %}
+  {% if needs %}<p><b>Approvals and decisions</b></p><ul class="plain">{% for n in needs %}<li>{{ n.summary }}</li>{% endfor %}</ul>{% endif %}
+  {% if needs_quote %}<p><b>VINs needing instant-offer quotes</b> <span class="muted">(run <code>flipscout quote assist &lt;id&gt;</code>)</span></p>
+  <table class="t"><tr><th>#</th><th>Car</th><th>VIN</th><th>Still need</th></tr>
+  {% for q in needs_quote %}<tr><td>{{ q.listing.id }}</td><td><a href="{{ q.listing.url }}">{{ q.listing.title }}</a></td><td><code>{{ q.listing.vin }}</code></td><td>{{ q.missing|join(', ') }}</td></tr>{% endfor %}
+  </table>{% endif %}
+  {% if drafts %}<p><b>Messages {{ 'drafted in this dry run (not sent)' if dry_run else 'queued, drafted or blocked' }}</b></p>
+  {% for m in drafts %}
+    <div class="muted">#{{ m.listing_pk }} <a href="{{ m.url }}">{{ m.title }}</a> · {{ m.kind|replace('_',' ') }} · <b>{{ m.status }}</b>{% if m.guard and m.guard.reasons %} · guard: {{ m.guard.reasons|join('; ') }}{% endif %}</div>
+    <div class="draft">{{ m.body }}</div>
+  {% endfor %}{% endif %}
+
+  <h2>4 · Under watch &amp; dropped</h2>
+  {% if watch %}<p><b>Watching</b> <span class="muted">({{ watch_total }} total{% if watch_total > watch|length %}, top {{ watch|length }} shown{% endif %})</span></p>
+  <table class="t"><tr><th>Car</th><th>Asking</th><th>Why it's not a deal yet</th></tr>
+  {% for w in watch %}<tr><td><a href="{{ w.url }}">{{ w.title }}</a></td><td>{{ w.price|money }}</td><td>{{ w.reason }}</td></tr>{% endfor %}</table>
+  {% else %}<p class="muted">No new watch-list items.</p>{% endif %}
+  {% if dropped %}<p><b>Dropped today</b></p>
+  <table class="t"><tr><th>Car</th><th>Asking</th><th>Reason</th></tr>
+  {% for d in dropped %}<tr><td><a href="{{ d.url }}">{{ d.title }}</a></td><td>{{ d.price|money }}</td><td>{{ d.reason }}</td></tr>{% endfor %}</table>{% endif %}
+
+  <h2>5 · Run health</h2>
+  <table class="t"><tr><th>Source</th><th>Seen</th><th>New</th><th>Price changes</th><th>Detail pages</th><th>Status</th></tr>
+  {% for src, st in stats.items() %}<tr><td>{{ 'Facebook Marketplace' if src == 'facebook' else 'Craigslist' }}</td><td>{{ st.seen }}</td><td>{{ st.new }}</td><td>{{ st.price_changed }}</td><td>{{ st.details }}</td><td>{{ '<b style="color:#a40e26">BLOCKED</b>'|safe if st.blocked else 'OK' }}</td></tr>{% endfor %}
+  </table>
+  <ul class="plain">
+    {% for e in errors %}<li>Error: {{ e }}</li>{% endfor %}
+    {% if not errors %}<li>No errors.</li>{% endif %}
+    <li>Claude calls today: {{ llm_calls }} ({{ '$%.2f'|format(llm_cost) }})</li>
+    <li>{{ dealer.message }}</li>
+    {% if unverified %}<li>Config values still marked VERIFY: <code>{{ unverified|join(', ') }}</code></li>{% endif %}
+  </ul>
+  <div class="foot">Every agreed price is pending in-person inspection. Title every car in your name before resale. flipscout never commits to a meeting time, sends money, shares your address or payment details, or makes a binding commitment without you.</div>
+</div>
+</body>
+</html>

@@ -37,7 +37,11 @@ search:
   max_asking_price: 9500           # consider asks up to this; negotiation must land <= budget
   min_asking_price: 1000           # below this is mostly junk/scams
   max_mileage: 250000
-  vehicle_types: [car, truck, suv, van]
+  comps_max_price: 20000           # search results up to this price are stored as comps (no detail page)
+
+browser:
+  headless: false                  # a normal visible browser window
+  executable_path: ""              # leave blank to use Playwright's Chromium
 
 sources:
   politeness:
@@ -66,6 +70,7 @@ sources:
     browser_profile_dir: ~/.flipscout/browser-profile
     category: vehicles
     sort: creation_time_descend
+    location_slug: ""              # blank = your saved Marketplace location; or a city slug
     max_scrolls: 6
     max_detail_pages_per_run: 40
     # location + radius are set once during `flipscout login` (stored by Marketplace)
@@ -77,6 +82,8 @@ profit:
   min_net_profit: 1000
   travel_cost_per_mile: 0.70       # PLACEHOLDER for your $[X]/mile. VERIFY
   round_trips_per_purchase: 1      # inspect + buy in one trip; set 2 if you inspect first
+  unknown_distance_miles: 60       # assumed one-way road miles when a listing has no location
+  hold_days_instant: 10            # buy -> title in your name -> instant-buyer pickup. VERIFY
   condition_risk_buffer_pct: 0.10  # 10% of the best offer
   condition_risk_buffer_base: best_offer
   # One-way-and-back miles to hand the car to each buyer (Carvana picks up free).
@@ -116,6 +123,8 @@ valuation:
     min_comps_medium: 4
     min_comps_high: 8
     max_iqr_ratio_high: 0.25       # (p75 - p25) / median must be under this for HIGH
+    mileage_adj_per_mile: 0.04     # comp price adjustment per mile of difference
+    year_adj_pct: 0.06             # comp price adjustment per model year of difference
   instant:
     buyers: [carvana, carmax, kbb_ico]   # third buyer: kbb_ico. Alternatives: peddle, cargurus, driveway
     offer_ratio_default: 0.78      # est. instant offer / private-party market value. VERIFY
@@ -129,7 +138,7 @@ valuation:
     sale_ratio: 0.95               # expected private sale price / market median
     hold_days: 21
     extra_costs: 150               # detail, photos, listing, misc
-  estimate_uses: low_band          # walk-away math on ESTIMATE uses the 25th-percentile band
+  estimate_uses: low_band          # low_band (25th percentile, conservative) or median
   vin_decode: nhtsa_vpic           # free public API; also checks open recalls
 
 # ---------------------------------------------------------------------------
@@ -141,17 +150,21 @@ filters:
   reject_no_title_keywords: ["no title", "lost title", "bill of sale only", "title in transit",
     "waiting on title", "parts only", "no paperwork"]
   reject_not_running_keywords: ["doesn't run", "does not run", "not running", "won't start",
-    "wont start", "no start", "needs engine", "needs motor", "needs transmission", "blown",
-    "mechanic special", "project car", "parts car", "tow only", "seized"]
-  dealer_keywords: [financing, "buy here pay here", "doc fee", "dealer fee", "stock #",
-    "stock number", "warranty available", "we finance", "+ tax", "plus tax and tags",
-    "trade-ins welcome", "inventory"]
+    "wont start", "no start", "needs engine", "needs motor", "needs transmission", "needs a transmission",
+    "blown engine", "blown motor", "blown head gasket", "blown transmission", "mechanic special",
+    "project car", "parts car", "tow only", "seized", "needs to be towed"]
+  dealer_keywords: ["buy here pay here", "doc fee", "dealer fee", "stock #", "stock number",
+    "we finance", "in-house financing", "financing available", "warranty available",
+    "plus tax and tags", "+ tax", "+tax", "trade-ins welcome", "visit our lot", "our inventory"]
   dealer_max_vehicle_listings_by_seller: 3
   scam:
-    price_below_market_ratio: 0.55
-    keywords: [deposit, escrow, shipping, "ship it", "gift card", zelle, cashapp, "cash app",
-      venmo, "text me at", "email me at", "deployed", overseas, "ebay motors protection",
-      "my late husband", "moving abroad"]
+    price_below_market_ratio: 0.55 # hard reject only when the market estimate is MEDIUM/HIGH confidence
+    hard_keywords: [deposit, escrow, shipping, "ship it", "will ship", "gift card", "ebay motors",
+      deployed, overseas, "moving abroad", "my late husband", "transport company",
+      "vehicle protection program"]
+    soft_keywords: [zelle, "cash app", cashapp, venmo, paypal]
+    facebook_offplatform_keywords: ["email me at", "only by email", "text only", "don't check facebook",
+      "don't use messenger", "do not message here", "@gmail.com", "@yahoo.com", "@outlook.com", "@hotmail.com"]
     duplicate_photo_hamming_max: 6 # perceptual-hash distance counted as "same photo"
     stock_photo_check: true        # Claude image check on photo #1
   soft_flags:                      # score deductions (points)
@@ -162,6 +175,14 @@ filters:
     vin_mismatch: 8
     open_recall: 1
     needs_minor_work: 2
+    title_not_in_name: 6
+    payment_app_mention: 2
+    offplatform_phone: 3
+    possible_scam_signal: 5
+    suspiciously_cheap: 6
+    unknown_mileage: 2
+    unknown_year: 3
+    cross_posted: 0
 
 # ---------------------------------------------------------------------------
 # Scoring
@@ -212,6 +233,7 @@ negotiation:
   step_min_dollars: 100
   step_fraction_of_gap: 0.33
   max_counter_rounds: 4
+  max_negotiation_gap_pct: 0.15    # asking more than 15% above walk-away -> watch, not candidate
   require_real_quote_to_agree: true   # or patient exit at HIGH confidence
   agreement_phrase: "pending in-person inspection"
 
